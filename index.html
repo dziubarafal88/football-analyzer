@@ -583,6 +583,39 @@ function App(){
       {/* ── PEWNIAKI ── */}
       {dayData&&view==='pewniaki'&&!analysis&&<div>
         {loadPew&&<div style={{background:"#022c22",border:"1px solid #065f46",borderRadius:12,padding:"12px 16px",color:"#6ee7b7",fontSize:13,marginBottom:14,display:"flex",alignItems:"center",gap:10}}><span style={{animation:"spin 1s linear infinite",display:"inline-block"}}>⟳</span>Analizuję wszystkie ligi...</div>}
+        {/* Poradnik value bet — PEWNIAKI */}
+        {!loadPew&&<div style={{background:"#0a1f15",border:"1px solid #14532d",borderRadius:12,padding:"14px 16px",marginBottom:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#34d399",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:10}}>📊 KIEDY OBSTAWIAĆ WYGRANĄ?</div>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8,paddingBottom:8,borderBottom:"1px solid #14532d"}}>
+            <div style={{flexShrink:0,width:56,textAlign:"center",background:"#14532d",borderRadius:8,padding:"4px 0"}}>
+              <div style={{fontSize:18,fontWeight:900,color:"#10b981"}}>75%+</div>
+              <div style={{fontSize:9,color:"#166534"}}>MODEL</div>
+            </div>
+            <div style={{fontSize:12,color:"#6ee7b7"}}><span style={{color:"#10b981",fontWeight:700}}>PEWNY TYP</span> — graj przy kursie ≥ 1.35</div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8,paddingBottom:8,borderBottom:"1px solid #14532d"}}>
+            <div style={{flexShrink:0,width:56,textAlign:"center",background:"#14532d",borderRadius:8,padding:"4px 0"}}>
+              <div style={{fontSize:18,fontWeight:900,color:"#34d399"}}>65–75%</div>
+              <div style={{fontSize:9,color:"#166534"}}>MODEL</div>
+            </div>
+            <div style={{fontSize:12,color:"#6ee7b7"}}>Mocny typ przy kursie ≥ 1.55</div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+            <div style={{flexShrink:0,width:56,textAlign:"center",background:"#14532d",borderRadius:8,padding:"4px 0"}}>
+              <div style={{fontSize:18,fontWeight:900,color:"#86efac"}}>50–65%</div>
+              <div style={{fontSize:9,color:"#166534"}}>MODEL</div>
+            </div>
+            <div style={{fontSize:12,color:"#94a3b8"}}>Sensowny typ przy kursie ≥ 1.80 — sprawdź kontekst</div>
+          </div>
+          <div style={{background:"#0f172a",borderRadius:8,padding:"10px 12px"}}>
+            <div style={{fontSize:11,color:"#10b981",fontWeight:700,marginBottom:6}}>🎯 ZASADA VALUE BET:</div>
+            <div style={{fontSize:11,color:"#94a3b8",lineHeight:1.6}}>
+              Jeśli model daje 70% → sprawiedliwy kurs = 1/0.70 = <span style={{color:"#34d399",fontWeight:700}}>1.43</span><br/>
+              Grasz tylko gdy bukmacher daje <span style={{color:"#10b981",fontWeight:700}}>WIĘCEJ</span> niż sprawiedliwy kurs<br/>
+              • Akumulatory: łącz 2–3 typy 70%+ → kurs rośnie, ryzyko akceptowalne
+            </div>
+          </div>
+        </div>}
         {!loadPew&&pewniaki.length===0&&<div style={{...CARD,textAlign:"center",color:"#64748b"}}>Brak pewnych typów na ten dzień (wszystkie mecze poniżej 50%).</div>}
         {pewniaki.map(({match,league,probs},i)=>{
           const hWin=probs.home>probs.away;
@@ -602,8 +635,18 @@ function App(){
               <div>
                 <div style={{fontSize:10,color:"#6ee7b7",marginBottom:2}}>🔥 FAWORYT</div>
                 <div style={{fontSize:14,fontWeight:700,color:"#f1f5f9"}}>{favTeam}</div>
+                <div style={{fontSize:10,color:"#166534",marginTop:4}}>
+                  min. kurs: <span style={{color:favProb>=75?"#10b981":favProb>=65?"#34d399":"#86efac",fontWeight:700}}>
+                    {favProb>=75?"≥ 1.35":favProb>=65?"≥ 1.55":"≥ 1.80"}
+                  </span>
+                </div>
               </div>
-              <div style={{fontFamily:"monospace",fontSize:32,fontWeight:900,color:"#10b981"}}>{favProb}%</div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontFamily:"monospace",fontSize:32,fontWeight:900,color:favProb>=75?"#10b981":favProb>=65?"#34d399":"#86efac"}}>{favProb}%</div>
+                <div style={{fontSize:9,color:favProb>=75?"#10b981":favProb>=65?"#34d399":"#94a3b8",fontWeight:700}}>
+                  {favProb>=75?"🔒 PEWNY":favProb>=65?"✅ MOCNY":"⚡ RYZYKO"}
+                </div>
+              </div>
             </div>
             <div style={{display:"flex",gap:6,marginTop:8}}>
               <div style={{flex:1,textAlign:"center",fontSize:11,color:probs.home>50?"#10b981":"#64748b",fontWeight:probs.home>50?700:400}}>{match.homeTeam.split(' ')[0]} {probs.home}%</div>
