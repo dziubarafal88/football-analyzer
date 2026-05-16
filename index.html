@@ -23,9 +23,8 @@ const {useState,useMemo}=React;
 const BASE = "https://api.football-data.org/v4";
 
 async function fdGet(path, token) {
-  const res = await fetch(`${BASE}/${path}`, {
-    headers: { "X-Auth-Token": token }
-  });
+  const sep = path.includes("?") ? "&" : "?";
+  const res = await fetch(`${BASE}/${path}${sep}token=${token}`);
   if (!res.ok) {
     const j = await res.json().catch(() => ({}));
     throw new Error(j.message || `HTTP ${res.status}`);
