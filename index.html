@@ -21,7 +21,7 @@ const {useState,useMemo}=React;
 
 // ─── FOOTBALL-DATA.ORG API — CORS: * — DARMOWY ───────────────────────────────
 const BASE = "https://api.football-data.org/v4";
-const PROXY = "https://corsproxy.io/?url=";
+const PROXY = "https://corsproxy.io/?";
 
 async function fdGet(path, token) {
   const url = encodeURIComponent(`${BASE}/${path}`);
