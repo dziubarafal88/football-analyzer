@@ -19,6 +19,47 @@ select option{background:#1e293b;color:#f1f5f9}
 <script type="text/babel">
 const {useState,useMemo,useRef,useEffect}=React;
 
+// ─── DODATKOWE RYNKI BUKMACHERSKIE ──────────────────────────────────────────
+// Over/Under 2.5, BTTS, Top wyniki — kluczowe dla precyzji typowania
+
+function calcMarkets(lH, lA, max=9) {
+  let under=0,over=0,btts=0,nobtts=0;
+  for(let h=0;h<=max;h++) for(let a=0;a<=max;a++){
+    const p=Math.max(0, pmf(lH,h)*pmf(lA,a)*dcCorr(h,a,lH,lA));
+    if(h+a<3)under+=p; else over+=p;
+    if(h>0&&a>0)btts+=p; else nobtts+=p;
+  }
+  const t1=under+over||1, t2=btts+nobtts||1;
+  return{
+    under25:Math.round(under/t1*1000)/10,
+    over25: Math.round(over/t1*1000)/10,
+    btts:   Math.round(btts/t2*1000)/10,
+    nobtts: Math.round(nobtts/t2*1000)/10,
+  };
+}
+
+function topScores(lH, lA, n=6) {
+  const arr=[];
+  for(let h=0;h<=5;h++) for(let a=0;a<=5;a++){
+    arr.push({s:`${h}:${a}`, p:Math.max(0,pmf(lH,h)*pmf(lA,a)*dcCorr(h,a,lH,lA))});
+  }
+  return arr.sort((a,b)=>b.p-a.p).slice(0,n).map(x=>({...x,p:Math.round(x.p*1000)/10}));
+}
+
+function getMotivation(pos, total) {
+  if(!pos||!total) return null;
+  const bot3 = pos > total-3;
+  const top4  = pos <= 4;
+  const top6  = pos <= 6;
+  if(pos===1) return {label:"🏆 Walka o mistrzostwo",color:"#f59e0b",impact:"high"};
+  if(pos<=3)  return {label:"🥇 Top 3 — tytuł w zasięgu",color:"#f59e0b",impact:"high"};
+  if(top4)    return {label:"⭐ Walka o Ligę Mistrzów",color:"#6366f1",impact:"high"};
+  if(top6)    return {label:"🇪🇺 Walka o puchary europejskie",color:"#3b82f6",impact:"med"};
+  if(bot3)    return {label:"🔴 STREFA SPADKOWA — desperacja",color:"#ef4444",impact:"high"};
+  if(pos>total-6) return {label:"⚠️ Walka o utrzymanie",color:"#f97316",impact:"med"};
+  return {label:"😐 Środek tabeli — niska motywacja",color:"#64748b",impact:"low"};
+}
+
 // ─── FOOTBALL-DATA.ORG API ───────────────────────────────────────────────────
 const BASE = "https://api.football-data.org/v4";
 const PROXY = "https://corsproxy.io/?";
@@ -148,6 +189,7 @@ async function fetchTeamStats(teamId, compCode, token, onStatus, label) {
     return {
       result: gs>gc?"W":gs===gc?"D":"L", scored:gs, conceded:gc, isHome,
       opponent: isHome?(m.awayTeam?.shortName||m.awayTeam?.name):(m.homeTeam?.shortName||m.homeTeam?.name),
+      utcDate: m.utcDate,
       w: timeWeight(m.utcDate)
     };
   });
@@ -453,7 +495,24 @@ function App(){
       const lH = Math.max(0.3,Math.min(4.5, (hAs/L)*(aAc/L)*L*H    *(0.85+hF*0.30)*hSusPenalty));
       const lA = Math.max(0.3,Math.min(4.5, (aAs/L)*(hAc/L)*L      *(0.85+aF*0.30)*aSusPenalty));
       // calcProbs zawiera korekcję Dixon-Coles (ρ=-0.13) poprawiającą predykcję remisów
-      setAnalysis({match,hStats,aStats,standings,h2h,lH,lA,probs:calcProbs(lH,lA),league:selLeague,season:"2024/25"});
+      const probs   = calcProbs(lH,lA);
+      const markets = calcMarkets(lH,lA);
+      const scores  = topScores(lH,lA);
+
+      // Motywacja z pozycji w tabeli
+      const tblLen = tbl2.length;
+      const hMotiv = getMotivation(standings?.home?.position, tblLen);
+      const aMotiv = getMotivation(standings?.away?.position, tblLen);
+
+      // Zmęczenie — dni od ostatniego meczu
+      const lastMatchDate = f => f?.form?.[f.form.length-1];
+      const hLastDate = hStats.form?.length ? hStats.form[hStats.form.length-1]?.utcDate : null;
+      const aLastDate = aStats.form?.length ? aStats.form[aStats.form.length-1]?.utcDate : null;
+      const daysSince = d => d ? Math.round((Date.now()-new Date(d).getTime())/86400000) : null;
+      const hRest = daysSince(hLastDate);
+      const aRest = daysSince(aLastDate);
+
+      setAnalysis({match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,hMotiv,aMotiv,hRest,aRest,league:selLeague,season:"2024/25"});
     }catch(e){setError(e.message);}
     setLoading(false);setStatus("");
   };
@@ -670,7 +729,7 @@ function App(){
 
       {/* ── KROK 3: ANALIZA ── */}
       {analysis&&(()=>{
-        const{match,hStats,aStats,standings,h2h,lH,lA,probs,league}=analysis;
+        const{match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,hMotiv,aMotiv,hRest,aRest,league}=analysis;
         const SR=({label,hv,av,lower})=>{
           const h=parseFloat(hv),a=parseFloat(av),hW=lower?h<a:h>a,aW=lower?a<h:a>h;
           return<div style={{display:"flex",alignItems:"center",padding:"7px 0",borderBottom:"1px solid #1e293b"}}>
@@ -758,6 +817,57 @@ function App(){
               </div>
             ))}
           </div>
+
+          {/* ── MOTYWACJA I ZMĘCZENIE ── */}
+          {(hMotiv||aMotiv||hRest||aRest)&&<div style={CARD}>
+            <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,letterSpacing:"0.1em",color:"#f59e0b",marginBottom:14}}>🧠 KONTEKST MECZU</div>
+            {[{name:match.homeTeam,motiv:hMotiv,rest:hRest,isHome:true},{name:match.awayTeam,motiv:aMotiv,rest:aRest,isHome:false}].map(({name,motiv,rest})=>(
+              <div key={name} style={{marginBottom:12,paddingBottom:12,borderBottom:"1px solid #1e293b"}}>
+                <div style={{fontSize:12,fontWeight:700,color:"#f1f5f9",marginBottom:6}}>{name}</div>
+                {motiv&&<div style={{display:"inline-block",background:"#1e293b",borderRadius:6,padding:"4px 10px",fontSize:11,color:motiv.color,fontWeight:700,marginBottom:rest?6:0}}>{motiv.label}</div>}
+                {rest!=null&&<div style={{display:"flex",alignItems:"center",gap:6,marginTop:4}}>
+                  <span style={{fontSize:11,color:rest<4?"#ef4444":rest<7?"#f59e0b":"#10b981"}}>
+                    {rest<4?"⚠️ ZMĘCZENIE":rest<7?"😐 Normalny odpoczynek":"✅ Wypoczęty"} — {rest} dni od ostatniego meczu
+                  </span>
+                </div>}
+              </div>
+            ))}
+            <div style={{fontSize:10,color:"#374151",marginTop:4}}>💡 Zmęczenie {"<"}4 dni = ryzyko obniżonej skuteczności i koncentracji</div>
+          </div>}
+
+          {/* ── DODATKOWE RYNKI ── */}
+          {markets&&<div style={CARD}>
+            <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,letterSpacing:"0.1em",color:"#34d399",marginBottom:14}}>📊 DODATKOWE RYNKI</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
+              {[
+                {label:"Over 2.5 gola",val:markets.over25,good:markets.over25>55,color:"#10b981"},
+                {label:"Under 2.5 gola",val:markets.under25,good:markets.under25>55,color:"#6366f1"},
+                {label:"Obie strzelą (BTTS)",val:markets.btts,good:markets.btts>55,color:"#f59e0b"},
+                {label:"BTTS — NIE",val:markets.nobtts,good:markets.nobtts>55,color:"#94a3b8"},
+              ].map(({label,val,good,color})=>(
+                <div key={label} style={{background:"#0f172a",border:`1px solid ${good?"#1e4a3a":"#1e293b"}`,borderRadius:10,padding:"10px 12px",textAlign:"center"}}>
+                  <div style={{fontSize:10,color:"#64748b",marginBottom:4}}>{label}</div>
+                  <div style={{fontSize:26,fontWeight:900,color:good?color:"#475569"}}>{val}%</div>
+                  {good&&<div style={{fontSize:9,color,marginTop:2,fontWeight:700}}>✓ DOMINUJĄCY</div>}
+                </div>
+              ))}
+            </div>
+            <div style={{fontSize:11,color:"#374151"}}>💡 Powyżej 55% = statystycznie pewniejszy wynik rynku</div>
+          </div>}
+
+          {/* ── TOP WYNIKI ── */}
+          {scores&&scores.length>0&&<div style={CARD}>
+            <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,letterSpacing:"0.1em",color:"#34d399",marginBottom:14}}>🎯 TOP 6 NAJCZĘSTSZYCH WYNIKÓW</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+              {scores.map((s,i)=>(
+                <div key={s.score} style={{background:i===0?"#0a1f15":"#0f172a",border:`1px solid ${i===0?"#10b981":"#1e293b"}`,borderRadius:10,padding:"10px 6px",textAlign:"center"}}>
+                  <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:26,color:i===0?"#10b981":"#f1f5f9",letterSpacing:"0.1em"}}>{s.score}</div>
+                  <div style={{fontSize:11,color:i===0?"#34d399":"#64748b",fontWeight:i===0?700:400}}>{s.p}%</div>
+                  {i===0&&<div style={{fontSize:9,color:"#10b981",marginTop:2}}>NAJCZĘSTSZY</div>}
+                </div>
+              ))}
+            </div>
+          </div>}
 
           {/* Kartki i zawieszenia */}
           {(hStats.suspended?.length>0||aStats.suspended?.length>0||hStats.yellowRisk?.length>0||aStats.yellowRisk?.length>0)&&<div style={CARD}>
