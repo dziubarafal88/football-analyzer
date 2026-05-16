@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>⚽ Football Analyzer</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#030712;color:#f1f5f9;font-family:'DM Sans',sans-serif}
+select option{background:#1e293b;color:#f1f5f9}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body><div id="root"></div>
+<script type="text/babel">
+const {useState,useMemo}=React;
+
+// ─── FOOTBALL-DATA.ORG API — CORS: * — DARMOWY ───────────────────────────────
+const BASE = "https://api.football-data.org/v4";
+
+async function fdGet(path, token) {
+  const res = await fetch(`${BASE}/${path}`, {
+    headers: { "X-Auth-Token": token }
+  });
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({}));
+    throw new Error(j.message || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Pobierz wszystkie mecze danego dnia
+async function fetchDayMatches(dateStr, token, onStatus) {
+  onStatus("📡 Pobieram mecze z football-data.org...");
+  const data = await fdGet(`matches?date=${dateStr}`, token);
+  const matches = data.matches || [];
+  if (!matches.length) throw new Error("Brak meczów na ten dzień w dostępnych ligach.");
+
+  // Grupuj po lidze
+  const map = {};
+  for (const m of matches) {
+    const key = m.competition?.name || "Inne";
+    if (!map[key]) map[key] = { name: key, code: m.competition?.code, matches: [] };
+    map[key].matches.push({
+      id: m.id,
+      homeTeam: m.homeTeam?.name,
+      homeId:   m.homeTeam?.id,
+      awayTeam: m.awayTeam?.name,
+      awayId:   m.awayTeam?.id,
+      time: m.utcDate ? new Date(m.utcDate).toLocaleTimeString("pl-PL",{hour:"2-digit",minute:"2-digit",timeZone:"Europe/Warsaw"}) : "TBD",
+      status: m.status,
+      score: m.status === "FINISHED"
+        ? `${m.score?.fullTime?.home ?? "?"} - ${m.score?.fullTime?.away ?? "?"}`
+        : null,
+      matchday: m.matchday,
+    });
+  }
+  return { date: dateStr, leagues: Object.values(map) };
+}
+
+// Pobierz formę drużyny + statystyki z bieżącego sezonu
+async function fetchTeamStats(teamId, compCode, token, onStatus, label) {
+  onStatus(`📊 Forma: ${label}...`);
+  await sleep(700); // rate limit: 10 req/min
+
+  const data = await fdGet(
+    `teams/${teamId}/matches?status=FINISHED&limit=10${compCode ? "&competitions=" + compCode : ""}`,
+    token
+  );
+  const matches = data.matches || [];
+  const last5 = matches.slice(-5);
+  const last10 = matches.slice(-10);
+
+  let scored = 0, conceded = 0;
+  last10.forEach(m => {
+    const isHome = m.homeTeam?.id === teamId;
+    scored   += (isHome ? m.score?.fullTime?.home : m.score?.fullTime?.away) ?? 0;
+    conceded += (isHome ? m.score?.fullTime?.away : m.score?.fullTime?.home) ?? 0;
+  });
+
+  const form = last5.map(m => {
+    const isHome = m.homeTeam?.id === teamId;
+    const gs = (isHome ? m.score?.fullTime?.home : m.score?.fullTime?.away) ?? 0;
+    const gc = (isHome ? m.score?.fullTime?.away : m.score?.fullTime?.home) ?? 0;
+    return {
+      result: gs > gc ? "W" : gs === gc ? "D" : "L",
+      scored: gs, conceded: gc, isHome,
+      opponent: isHome ? (m.awayTeam?.shortName || m.awayTeam?.name) : (m.homeTeam?.shortName || m.homeTeam?.name),
+    };
+  });
+
+  const n = last10.length || 1;
+  return { form, avgScored: scored / n, avgConceded: conceded / n };
+}
+
+async function fetchStandings(compCode, homeId, awayId, token, onStatus) {
+  if (!compCode) return { home: null, away: null };
+  onStatus("📋 Pobieranie tabeli...");
+  await sleep(700);
+  try {
+    const data = await fdGet(`competitions/${compCode}/standings`, token);
+    const table = data.standings?.[0]?.table || [];
+    const parse = id => {
+      const row = table.find(r => r.team?.id === id);
+      if (!row) return null;
+      return { position: row.position, points: row.points, goalsFor: row.goalsFor, goalsAgainst: row.goalsAgainst };
+    };
+    return { home: parse(homeId), away: parse(awayId) };
+  } catch { return { home: null, away: null }; }
+}
+
+async function fetchH2H(matchId, token, onStatus) {
+  onStatus("🔄 Pobieranie H2H...");
+  await sleep(700);
+  try {
+    const data = await fdGet(`matches/${matchId}`, token);
+    return (data.head2head?.matches || []).slice(-5).reverse().map(m => ({
+      year: new Date(m.utcDate).getFullYear(),
+      homeTeam: m.homeTeam?.shortName || m.homeTeam?.name,
+      awayTeam: m.awayTeam?.shortName || m.awayTeam?.name,
+      homeScore: m.score?.fullTime?.home,
+      awayScore: m.score?.fullTime?.away,
+    }));
+  } catch { return []; }
+}
+
+// ─── POISSON ──────────────────────────────────────────────────────────────────
+function pmf(l,k){if(l<=0)return k===0?1:0;let p=-l+k*Math.log(l);for(let i=1;i<=k;i++)p-=Math.log(i);return Math.exp(p);}
+function calcProbs(lH,lA){
+  let hw=0,dr=0,aw=0;
+  for(let h=0;h<=9;h++) for(let a=0;a<=9;a++){
+    const p=pmf(lH,h)*pmf(lA,a);
+    if(h>a)hw+=p; else if(h===a)dr+=p; else aw+=p;
+  }
+  const t=hw+dr+aw||1;
+  return{home:Math.round(hw/t*1000)/10,draw:Math.round(dr/t*1000)/10,away:Math.round(aw/t*1000)/10};
+}
+
+// ─── CALENDAR ─────────────────────────────────────────────────────────────────
+const MPL=["Styczeń","Luty","Marzec","Kwiecień","Maj","Czerwiec","Lipiec","Sierpień","Wrzesień","Październik","Listopad","Grudzień"];
+const DPL=["Pn","Wt","Śr","Cz","Pt","So","Nd"];
+function calDays(y,m){const f=new Date(y,m,1),l=new Date(y,m+1,0);let d=f.getDay();d=d===0?6:d-1;const a=[];for(let i=0;i<d;i++)a.push(null);for(let x=1;x<=l.getDate();x++)a.push(x);return a;}
+function ds(y,m,d){return`${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;}
+
+function Calendar({sel,onSel}){
+  const now=new Date();
+  const[vm,setVm]=useState({y:now.getFullYear(),m:now.getMonth()});
+  const days=useMemo(()=>calDays(vm.y,vm.m),[vm.y,vm.m]);
+  const today=ds(now.getFullYear(),now.getMonth(),now.getDate());
+  const go=n=>setVm(v=>{const d=new Date(v.y,v.m+n,1);return{y:d.getFullYear(),m:d.getMonth()};});
+  return<div>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+      <button onClick={()=>go(-1)} style={NB}>‹</button>
+      <span style={{fontFamily:"'Bebas Neue',cursive",fontSize:20,color:"#f1f5f9",letterSpacing:"0.06em"}}>{MPL[vm.m]} {vm.y}</span>
+      <button onClick={()=>go(1)} style={NB}>›</button>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2,marginBottom:5}}>
+      {DPL.map(d=><div key={d} style={{textAlign:"center",fontSize:10,color:"#475569"}}>{d}</div>)}
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2}}>
+      {days.map((day,i)=>{
+        if(!day)return<div key={`_${i}`}/>;
+        const str=ds(vm.y,vm.m,day);
+        const isSel=str===sel,isToday=str===today;
+        return<button key={str} onClick={()=>onSel(str)} style={{padding:"9px 2px",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:isSel||isToday?700:400,background:isSel?"#10b981":isToday?"#1e3a2f":"transparent",color:isSel?"#000":isToday?"#10b981":"#94a3b8",outline:isToday&&!isSel?"1px solid #10b981":"none"}}>{day}</button>;
+      })}
+    </div>
+  </div>;
+}
+const NB={background:"none",border:"1px solid #1e293b",borderRadius:8,color:"#94a3b8",fontSize:18,cursor:"pointer",width:34,height:34,lineHeight:1};
+
+// ─── UI MICRO ─────────────────────────────────────────────────────────────────
+const rc=r=>r==="W"?"#10b981":r==="D"?"#f59e0b":"#ef4444";
+const CARD={background:"#0f172a",border:"1px solid #1e293b",borderRadius:16,padding:"20px 22px",marginBottom:14};
+const BTN={width:"100%",padding:"13px",background:"#10b981",color:"#000",fontWeight:700,fontSize:14,border:"none",borderRadius:12,cursor:"pointer"};
+const BTN2={...BTN,background:"#1e293b",color:"#94a3b8"};
+const INP={width:"100%",background:"#1e293b",border:"1px solid #334155",borderRadius:10,padding:"11px 14px",color:"#fff",fontSize:14,fontFamily:"'DM Mono',monospace",outline:"none"};
+const SEL_S={width:"100%",background:"#1e293b",border:"1px solid #334155",borderRadius:10,padding:"12px 36px 12px 14px",color:"#f1f5f9",fontSize:14,fontFamily:"inherit",outline:"none",appearance:"none",backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E")`,backgroundRepeat:"no-repeat",backgroundPosition:"right 12px center"};
+
+function Dot({result,scored,conceded,opponent,isHome}){
+  return<div title={`${result} ${scored}:${conceded} vs ${opponent} (${isHome?"D":"W"})`} style={{width:28,height:28,borderRadius:"50%",background:rc(result),flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:result==="D"?"#000":"#fff"}}>{result}</div>;
+}
+function ProbBar({label,value,color}){
+  return<div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:7}}>
+    <span style={{fontSize:10,letterSpacing:"0.09em",color:"#94a3b8",textTransform:"uppercase",textAlign:"center",lineHeight:1.4}}>{label}</span>
+    <span style={{fontFamily:"'Bebas Neue',cursive",fontSize:44,color,lineHeight:1}}>{value.toFixed(1)}%</span>
+    <div style={{width:"100%",height:6,background:"#1e293b",borderRadius:3}}><div style={{width:`${value}%`,height:"100%",background:color,borderRadius:3,transition:"width 1.2s ease"}}/></div>
+  </div>;
+}
+
+// ─── MAIN ─────────────────────────────────────────────────────────────────────
+function App(){
+  const now=new Date();
+  const today=ds(now.getFullYear(),now.getMonth(),now.getDate());
+
+  const[token,setToken]=useState(localStorage.getItem("fdToken")||"");
+  const[tokenInput,setTokenInput]=useState(localStorage.getItem("fdToken")||"");
+  const[connected,setConnected]=useState(!!localStorage.getItem("fdToken"));
+
+  const[selDate,setSelDate]=useState(today);
+  const[dayData,setDayData]=useState(null);
+  const[loadDay,setLoadDay]=useState(false);
+  const[selLeague,setSelLeague]=useState("");
+  const[selMatch,setSelMatch]=useState("");
+  const[analysis,setAnalysis]=useState(null);
+  const[loading,setLoading]=useState(false);
+  const[status,setStatus]=useState("");
+  const[error,setError]=useState(null);
+
+  const leagueOpts=useMemo(()=>(dayData?.leagues||[]).map(l=>({value:l.name,label:`${l.name} (${l.matches?.length||0})`})),[dayData]);
+  const matchOpts=useMemo(()=>{
+    if(!dayData||!selLeague)return[];
+    const lg=dayData.leagues.find(l=>l.name===selLeague);
+    return(lg?.matches||[]).map(m=>({
+      value:JSON.stringify(m),
+      label:`${m.homeTeam} – ${m.awayTeam}${m.time&&m.time!=="TBD"?" · "+m.time:""}${m.score?" ("+m.score+")":""}`,
+    }));
+  },[dayData,selLeague]);
+
+  const reset=()=>{setDayData(null);setSelLeague("");setSelMatch("");setAnalysis(null);setError(null);};
+
+  const handleConnect=async()=>{
+    setError(null);
+    try{
+      await fdGet("competitions?plan=TIER_ONE",tokenInput.trim());
+      localStorage.setItem("fdToken",tokenInput.trim());
+      setToken(tokenInput.trim());
+      setConnected(true);
+    }catch(e){setError("Nieprawidłowy klucz: "+e.message);}
+  };
+
+  const handleFetchDay=async()=>{
+    setLoadDay(true);setError(null);reset();
+    try{
+      const data=await fetchDayMatches(selDate,token,setStatus);
+      setDayData(data);
+    }catch(e){setError(e.message);}
+    setLoadDay(false);setStatus("");
+  };
+
+  const handleAnalyze=async()=>{
+    const match=JSON.parse(selMatch);
+    const lg=dayData.leagues.find(l=>l.name===selLeague);
+    setAnalysis(null);setLoading(true);setError(null);
+    try{
+      const[hStats,aStats,standings,h2h]=await Promise.all([
+        fetchTeamStats(match.homeId,lg?.code,token,setStatus,match.homeTeam),
+        fetchTeamStats(match.awayId,lg?.code,token,setStatus,match.awayTeam),
+        fetchStandings(lg?.code,match.homeId,match.awayId,token,setStatus),
+        fetchH2H(match.id,token,setStatus),
+      ]);
+      // Poisson
+      const L=1.35,H=1.12;
+      const hF=hStats.form.length?hStats.form.reduce((a,f)=>a+(f.result==="W"?3:f.result==="D"?1:0),0)/(hStats.form.length*3):0.5;
+      const aF=aStats.form.length?aStats.form.reduce((a,f)=>a+(f.result==="W"?3:f.result==="D"?1:0),0)/(aStats.form.length*3):0.5;
+      const lH=Math.max(0.3,Math.min(4.5,(hStats.avgScored/L)*(aStats.avgConceded/L)*L*H*(0.85+hF*0.3)));
+      const lA=Math.max(0.3,Math.min(4.5,(aStats.avgScored/L)*(hStats.avgConceded/L)*L*(0.85+aF*0.3)));
+      setAnalysis({match,hStats,aStats,standings,h2h,lH,lA,probs:calcProbs(lH,lA),league:selLeague,season:"2024/25"});
+    }catch(e){setError(e.message);}
+    setLoading(false);setStatus("");
+  };
+
+  const fmtDate=s=>new Date(s+"T12:00:00").toLocaleDateString("pl-PL",{weekday:"long",day:"numeric",month:"long"});
+  const f2=n=>n!=null?Number(n).toFixed(2):"–";
+  const busy=loadDay||loading;
+
+  return<div style={{minHeight:"100vh",background:"#030712",color:"#f1f5f9",fontFamily:"'DM Sans',sans-serif",padding:"24px 16px 80px"}}>
+    <div style={{maxWidth:640,margin:"0 auto"}}>
+
+      <div style={{marginBottom:22}}>
+        <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:46,letterSpacing:"0.05em",lineHeight:1}}>⚽ FOOTBALL <span style={{color:"#10b981"}}>ANALYZER</span></div>
+        <div style={{fontSize:12,color:"#475569",marginTop:4}}>football-data.org · Aktualne dane · Model Poissona · Główne ligi</div>
+      </div>
+
+      {error&&<div style={{background:"#450a0a",border:"1px solid #7f1d1d",borderRadius:12,padding:"12px 16px",color:"#fca5a5",fontSize:13,marginBottom:14}}>⚠ {error}</div>}
+      {busy&&<div style={{background:"#022c22",border:"1px solid #065f46",borderRadius:12,padding:"12px 16px",color:"#6ee7b7",fontSize:13,marginBottom:14,display:"flex",alignItems:"center",gap:10}}><span style={{display:"inline-block",animation:"spin 1s linear infinite"}}>⟳</span>{status||"Ładuję..."}</div>}
+
+      {/* ── KLUCZ API ── */}
+      {!connected&&<div style={CARD}>
+        <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:20,color:"#34d399",marginBottom:12,letterSpacing:"0.08em"}}>KLUCZ API — FOOTBALL-DATA.ORG</div>
+        <p style={{fontSize:13,color:"#94a3b8",marginBottom:14,lineHeight:1.6}}>
+          Darmowy klucz z <a href="https://www.football-data.org/client/register" target="_blank" style={{color:"#34d399"}}>football-data.org/client/register</a><br/>
+          Pokrywa: Premier League, La Liga, Bundesliga, Serie A, Ligue 1, Eredivisie, Champions League i więcej.
+        </p>
+        <div style={{display:"flex",gap:10}}>
+          <input value={tokenInput} onChange={e=>setTokenInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleConnect()} placeholder="Wklej klucz API..." style={INP}/>
+          <button onClick={handleConnect} disabled={!tokenInput.trim()} style={{...BTN,width:"auto",padding:"11px 20px",opacity:tokenInput.trim()?1:0.4}}>POŁĄCZ</button>
+        </div>
+      </div>}
+
+      {/* ── KROK 1: KALENDARZ ── */}
+      {connected&&!analysis&&<div style={CARD}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}>
+          <div style={{width:26,height:26,borderRadius:"50%",background:dayData?"#10b981":"#1e293b",color:dayData?"#000":"#475569",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700}}>{dayData?"✓":"1"}</div>
+          <span style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,letterSpacing:"0.1em",color:dayData?"#34d399":"#f1f5f9"}}>WYBIERZ DZIEŃ</span>
+          {connected&&<button onClick={()=>{localStorage.removeItem("fdToken");setConnected(false);reset();}} style={{marginLeft:"auto",background:"none",border:"none",color:"#475569",fontSize:12,cursor:"pointer"}}>zmień klucz</button>}
+        </div>
+        <Calendar sel={selDate} onSel={d=>{setSelDate(d);reset();}}/>
+        <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1e293b"}}>
+          <div style={{fontSize:13,color:"#94a3b8",marginBottom:10,textAlign:"center"}}>📅 {fmtDate(selDate)}</div>
+          <button onClick={handleFetchDay} disabled={busy} style={{...BTN,opacity:busy?0.5:1}}>{loadDay?"⟳ SZUKAM...":"SZUKAJ MECZÓW"}</button>
+        </div>
+      </div>}
+
+      {/* ── KROK 2: LIGA + MECZ ── */}
+      {dayData&&!analysis&&<div style={CARD}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}>
+          <div style={{width:26,height:26,borderRadius:"50%",background:selMatch?"#10b981":"#1e293b",color:selMatch?"#000":"#475569",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700}}>{selMatch?"✓":"2"}</div>
+          <span style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,letterSpacing:"0.1em",color:selMatch?"#34d399":"#f1f5f9"}}>WYBIERZ LIGĘ I MECZ</span>
+        </div>
+        <div style={{fontSize:11,letterSpacing:"0.09em",color:"#64748b",textTransform:"uppercase",marginBottom:7}}>🏆 Liga — {leagueOpts.length} z meczami</div>
+        <div style={{marginBottom:14}}>
+          <select value={selLeague} onChange={e=>{setSelLeague(e.target.value);setSelMatch("");}} style={SEL_S}>
+            <option value="" disabled>Wybierz ligę...</option>
+            {leagueOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+        {selLeague&&<>
+          <div style={{fontSize:11,letterSpacing:"0.09em",color:"#64748b",textTransform:"uppercase",marginBottom:7}}>⚽ Mecz — {matchOpts.length} spotkań</div>
+          <div style={{marginBottom:14}}>
+            <select value={selMatch} onChange={e=>setSelMatch(e.target.value)} style={SEL_S}>
+              <option value="" disabled>Wybierz mecz...</option>
+              {matchOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+        </>}
+        {selMatch&&<button onClick={handleAnalyze} disabled={busy} style={{...BTN,opacity:busy?0.5:1}}>{loading?"⟳ ANALIZUJĘ...":"▶ ANALIZUJ MECZ"}</button>}
+      </div>}
+
+      {/* ── KROK 3: ANALIZA ── */}
+      {analysis&&(()=>{
+        const{match,hStats,aStats,standings,h2h,lH,lA,probs,league}=analysis;
+        const SR=({label,hv,av,lower})=>{
+          const h=parseFloat(hv),a=parseFloat(av),hW=lower?h<a:h>a,aW=lower?a<h:a>h;
+          return<div style={{display:"flex",alignItems:"center",padding:"7px 0",borderBottom:"1px solid #1e293b"}}>
+            <span style={{flex:1,textAlign:"right",fontFamily:"'DM Mono',monospace",fontSize:12,color:hW?"#34d399":"#94a3b8",fontWeight:hW?700:400}}>{hv}</span>
+            <span style={{width:160,textAlign:"center",fontSize:11,color:"#475569",padding:"0 6px"}}>{label}</span>
+            <span style={{flex:1,fontFamily:"'DM Mono',monospace",fontSize:12,color:aW?"#34d399":"#94a3b8",fontWeight:aW?700:400}}>{av}</span>
+          </div>;
+        };
+        return<div>
+          {/* Header */}
+          <div style={{...CARD,borderColor:"#065f46"}}>
+            <div style={{textAlign:"center",fontSize:11,color:"#475569",marginBottom:8,fontFamily:"'DM Mono',monospace"}}>📅 {fmtDate(selDate)} · {league}</div>
+            <div style={{display:"flex",alignItems:"center"}}>
+              <div style={{flex:1,textAlign:"right"}}>
+                <div style={{fontSize:19,fontWeight:700}}>{match.homeTeam}</div>
+                {standings.home&&<div style={{fontSize:11,color:"#64748b",fontFamily:"'DM Mono',monospace",marginTop:2}}>#{standings.home.position} · {standings.home.points} pkt</div>}
+              </div>
+              <span style={{width:56,textAlign:"center",fontFamily:"'Bebas Neue',cursive",fontSize:24,color:"#10b981"}}>VS</span>
+              <div style={{flex:1}}>
+                <div style={{fontSize:19,fontWeight:700}}>{match.awayTeam}</div>
+                {standings.away&&<div style={{fontSize:11,color:"#64748b",fontFamily:"'DM Mono',monospace",marginTop:2}}>#{standings.away.position} · {standings.away.points} pkt</div>}
+              </div>
+            </div>
+          </div>
+
+          {/* Prognoza */}
+          <div style={{...CARD,background:"#031a0d",borderColor:"#065f46"}}>
+            <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,letterSpacing:"0.12em",color:"#34d399",textAlign:"center",marginBottom:22}}>PROGNOZA WYNIKU</div>
+            <div style={{display:"flex",gap:12}}>
+              <ProbBar label={match.homeTeam} value={probs.home} color="#10b981"/>
+              <ProbBar label="Remis"          value={probs.draw} color="#f59e0b"/>
+              <ProbBar label={match.awayTeam} value={probs.away} color="#ef4444"/>
+            </div>
+            <div style={{textAlign:"center",marginTop:14,fontSize:11,color:"#374151"}}>
+              xG Gosp: <span style={{color:"#10b981",fontFamily:"'DM Mono',monospace"}}>{lH.toFixed(2)}</span>
+              {" · "}xG Goście: <span style={{color:"#ef4444",fontFamily:"'DM Mono',monospace"}}>{lA.toFixed(2)}</span>
+            </div>
+          </div>
+
+          {/* Statystyki */}
+          <div style={CARD}>
+            <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,letterSpacing:"0.1em",color:"#34d399",marginBottom:14}}>STATYSTYKI (ost. 10 meczów)</div>
+            <div style={{display:"flex",fontSize:11,marginBottom:6}}>
+              <span style={{flex:1,textAlign:"right",color:"#10b981"}}>{match.homeTeam}</span>
+              <span style={{width:160}}/>
+              <span style={{flex:1,color:"#ef4444"}}>{match.awayTeam}</span>
+            </div>
+            <SR label="Gole / mecz (śr.)"  hv={f2(hStats.avgScored)}    av={f2(aStats.avgScored)}    lower={false}/>
+            <SR label="Stracone / mecz"     hv={f2(hStats.avgConceded)}  av={f2(aStats.avgConceded)}  lower={true}/>
+            {standings.home&&standings.away&&<>
+              <SR label="Pozycja w tabeli" hv={String(standings.home.position)} av={String(standings.away.position)} lower={true}/>
+              <SR label="Punkty (sezon)"   hv={String(standings.home.points)}   av={String(standings.away.points)}   lower={false}/>
+              <SR label="Bilans goli"      hv={`${standings.home.goalsFor}:${standings.home.goalsAgainst}`} av={`${standings.away.goalsFor}:${standings.away.goalsAgainst}`} lower={false}/>
+            </>}
+          </div>
+
+          {/* Forma */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}}>
+            {[{name:match.homeTeam,st:hStats},{name:match.awayTeam,st:aStats}].map(({name,st})=>(
+              <div key={name} style={CARD}>
+                <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:16,marginBottom:10}}>{name}</div>
+                <div style={{fontSize:10,color:"#64748b",marginBottom:8}}>Forma – ost. 5</div>
+                <div style={{display:"flex",gap:4,marginBottom:8,flexWrap:"wrap"}}>{st.form.map((f,i)=><Dot key={i} {...f}/>)}</div>
+                {st.form.map((f,i)=>(
+                  <div key={i} style={{display:"flex",alignItems:"center",gap:5,fontSize:11,padding:"2px 0"}}>
+                    <div style={{width:18,height:18,borderRadius:"50%",background:rc(f.result),display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700,color:f.result==="D"?"#000":"#fff",flexShrink:0}}>{f.result}</div>
+                    <span style={{color:"#64748b",fontSize:10}}>{f.isHome?"D":"W"}</span>
+                    <span style={{fontFamily:"'DM Mono',monospace",color:"#e2e8f0"}}>{f.scored}:{f.conceded}</span>
+                    <span style={{color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.opponent}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+
+          {/* H2H */}
+          {h2h?.length>0&&<div style={CARD}>
+            <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,letterSpacing:"0.1em",color:"#34d399",marginBottom:14}}>H2H · HISTORIA BEZPOŚREDNIA</div>
+            {h2h.map((x,i)=>(
+              <div key={i} style={{display:"flex",alignItems:"center",padding:"7px 0",borderBottom:"1px solid #1e293b",fontSize:13}}>
+                <span style={{fontFamily:"'DM Mono',monospace",fontSize:10,color:"#64748b",width:36}}>{x.year}</span>
+                <span style={{flex:1,textAlign:"right",color:"#e2e8f0"}}>{x.homeTeam}</span>
+                <span style={{fontFamily:"'Bebas Neue',cursive",fontSize:20,color:"#fff",margin:"0 12px"}}>{x.homeScore} – {x.awayScore}</span>
+                <span style={{flex:1,color:"#e2e8f0"}}>{x.awayTeam}</span>
+              </div>
+            ))}
+          </div>}
+
+          <div style={{fontSize:10,color:"#374151",textAlign:"center",marginBottom:12}}>
+            Źródło: football-data.org (aktualne dane) · Model Poissona · Tylko informacyjnie
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            <button onClick={()=>setAnalysis(null)} style={BTN2}>← INNE SPOTKANIE</button>
+            <button onClick={()=>{setAnalysis(null);setDayData(null);setSelLeague("");setSelMatch("");}} style={BTN2}>📅 ZMIEŃ DZIEŃ</button>
+          </div>
+        </div>;
+      })()}
+    </div>
+  </div>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
