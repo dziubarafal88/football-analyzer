@@ -547,6 +547,39 @@ function App(){
       {/* ── REMISY ── */}
       {dayData&&view==='remisy'&&!analysis&&<div>
         {loadRem&&<div style={{background:"#0d0d2e",border:"1px solid #4338ca",borderRadius:12,padding:"12px 16px",color:"#a5b4fc",fontSize:13,marginBottom:14,display:"flex",alignItems:"center",gap:10}}><span style={{animation:"spin 1s linear infinite",display:"inline-block"}}>⟳</span>Szukam remisów we wszystkich ligach...</div>}
+        {/* Poradnik value bet */}
+        {!loadRem&&<div style={{background:"#13103a",border:"1px solid #312e81",borderRadius:12,padding:"14px 16px",marginBottom:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#818cf8",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:10}}>📊 KIEDY OBSTAWIAĆ REMIS?</div>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8,paddingBottom:8,borderBottom:"1px solid #1e1b4b"}}>
+            <div style={{flexShrink:0,width:52,textAlign:"center",background:"#1e1b4b",borderRadius:8,padding:"4px 0"}}>
+              <div style={{fontSize:18,fontWeight:900,color:"#6366f1"}}>34%+</div>
+              <div style={{fontSize:9,color:"#4f46e5"}}>MODEL</div>
+            </div>
+            <div style={{fontSize:12,color:"#a5b4fc"}}><span style={{color:"#10b981",fontWeight:700}}>VALUE BET</span> — graj przy kursie ≥ 2.90 u bukmachera</div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8,paddingBottom:8,borderBottom:"1px solid #1e1b4b"}}>
+            <div style={{flexShrink:0,width:52,textAlign:"center",background:"#1e1b4b",borderRadius:8,padding:"4px 0"}}>
+              <div style={{fontSize:18,fontWeight:900,color:"#818cf8"}}>31–34%</div>
+              <div style={{fontSize:9,color:"#4f46e5"}}>MODEL</div>
+            </div>
+            <div style={{fontSize:12,color:"#a5b4fc"}}>Sensowny typ przy kursie ≥ 3.10</div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+            <div style={{flexShrink:0,width:52,textAlign:"center",background:"#1e1b4b",borderRadius:8,padding:"4px 0"}}>
+              <div style={{fontSize:18,fontWeight:900,color:"#475569"}}>{"<28%"}</div>
+              <div style={{fontSize:9,color:"#374151"}}>MODEL</div>
+            </div>
+            <div style={{fontSize:12,color:"#64748b"}}>Pomiń — ryzyko przewyższa wartość</div>
+          </div>
+          <div style={{background:"#0f0d2a",borderRadius:8,padding:"10px 12px"}}>
+            <div style={{fontSize:11,color:"#6366f1",fontWeight:700,marginBottom:6}}>🎯 KIEDY REMIS MA SENS:</div>
+            <div style={{fontSize:11,color:"#94a3b8",lineHeight:1.6}}>
+              • Zbliżony bilans goli obu drużyn + słaba forma ofensywna<br/>
+              • <span style={{color:"#a5b4fc"}}>Serie A i Ligue 1</span> — historycznie najwięcej remisów w Europie<br/>
+              • Jeśli bukmacher daje {">"} 1/prawdopodobieństwo modelu → masz przewagę
+            </div>
+          </div>
+        </div>}
         {!loadRem&&remisy.length===0&&<div style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:14,padding:"20px",textAlign:"center",color:"#64748b"}}>Brak meczów z wyrównaną szansą remisu (min. 24% remis + różnica &lt;12pkt między drużynami).</div>}
         {remisy.map(({match,league,probs},i)=>(
           <button key={match.id} onClick={()=>{setSelLeague(league);handleAnalyze(match);}} disabled={busy} style={{width:"100%",background:"#0f172a",border:"2px solid #4f46e5",borderRadius:14,padding:"14px 16px",marginBottom:10,cursor:"pointer",textAlign:"left"}}>
@@ -561,10 +594,19 @@ function App(){
             </div>
             <div style={{background:"#13103a",borderRadius:8,padding:"10px 14px",display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
               <div>
-                <div style={{fontSize:10,color:"#818cf8",marginBottom:2}}>🤝 REMIS FAWORYTEM</div>
-                <div style={{fontSize:11,color:"#94a3b8"}}>Wyrównana siła drużyn</div>
+                <div style={{fontSize:10,color:"#818cf8",marginBottom:2}}>🤝 REMIS</div>
+                <div style={{fontSize:10,color:"#4f46e5",marginTop:2}}>
+                  min. kurs: <span style={{color:probs.draw>=34?"#10b981":probs.draw>=31?"#818cf8":"#64748b",fontWeight:700}}>
+                    {probs.draw>=34?"≥ 2.90":probs.draw>=31?"≥ 3.10":"≥ 3.40"}
+                  </span>
+                </div>
               </div>
-              <div style={{fontSize:32,fontWeight:900,color:"#6366f1"}}>{probs.draw}%</div>
+              <div>
+                <div style={{fontSize:32,fontWeight:900,color:probs.draw>=34?"#10b981":probs.draw>=31?"#6366f1":"#818cf8"}}>{probs.draw}%</div>
+                <div style={{fontSize:9,color:probs.draw>=34?"#10b981":probs.draw>=31?"#6366f1":"#64748b",textAlign:"right",fontWeight:700}}>
+                  {probs.draw>=34?"✅ VALUE":probs.draw>=31?"👍 OK":"⚠️ RYZYKO"}
+                </div>
+              </div>
             </div>
             <div style={{display:"flex",gap:6}}>
               <div style={{flex:1,textAlign:"center",fontSize:11,color:"#64748b"}}>{match.homeTeam.split(' ')[0]} {probs.home}%</div>
