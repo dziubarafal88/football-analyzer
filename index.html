@@ -367,9 +367,17 @@ function App(){
           <div style={{...CARD,background:"#031a0d",borderColor:"#065f46"}}>
             <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,letterSpacing:"0.12em",color:"#34d399",textAlign:"center",marginBottom:22}}>PROGNOZA WYNIKU</div>
             <div style={{display:"flex",gap:12}}>
-              <ProbBar label={match.homeTeam} value={probs.home} color="#10b981"/>
-              <ProbBar label="Remis"          value={probs.draw} color="#f59e0b"/>
-              <ProbBar label={match.awayTeam} value={probs.away} color="#ef4444"/>
+              {(()=>{
+                const best=Math.max(probs.home,probs.draw,probs.away);
+                const hc=probs.home===best?"#10b981":probs.home>probs.away?"#f59e0b":"#94a3b8";
+                const dc=probs.draw===best?"#10b981":"#f59e0b";
+                const ac=probs.away===best?"#10b981":probs.away>probs.home?"#f59e0b":"#94a3b8";
+                return<>
+                  <ProbBar label={match.homeTeam} value={probs.home} color={probs.home===best?"#10b981":probs.home>probs.away?"#6ee7b7":"#ef4444"}/>
+                  <ProbBar label="Remis"          value={probs.draw} color="#f59e0b"/>
+                  <ProbBar label={match.awayTeam} value={probs.away} color={probs.away===best?"#10b981":probs.away>probs.home?"#6ee7b7":"#ef4444"}/>
+                </>;
+              })()}
             </div>
             <div style={{textAlign:"center",marginTop:14,fontSize:11,color:"#374151"}}>
               xG Gosp: <span style={{color:"#10b981",fontFamily:"'DM Mono',monospace"}}>{lH.toFixed(2)}</span>
