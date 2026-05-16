@@ -675,6 +675,11 @@ function App(){
           </div>;
         };
         return<div>
+          {/* ── STICKY NAV ── */}
+          <div style={{position:"sticky",top:0,zIndex:100,background:"#030712",padding:"10px 0 8px",marginBottom:8,borderBottom:"1px solid #1e293b",display:"flex",gap:8}}>
+            <button onClick={()=>setAnalysis(null)} style={{flex:1,padding:"10px",background:"#1e293b",border:"none",borderRadius:10,color:"#94a3b8",fontSize:13,fontWeight:700,cursor:"pointer"}}>← POWRÓT DO MECZÓW</button>
+            <button onClick={()=>{setAnalysis(null);setDayData(null);setSelLeague("");setSelMatch("");}} style={{flex:1,padding:"10px",background:"#1e293b",border:"none",borderRadius:10,color:"#94a3b8",fontSize:13,fontWeight:700,cursor:"pointer"}}>📅 ZMIEŃ DZIEŃ</button>
+          </div>
           {/* Header */}
           <div style={{...CARD,borderColor:"#065f46"}}>
             <div style={{textAlign:"center",fontSize:11,color:"#475569",marginBottom:8,fontFamily:"'DM Mono',monospace"}}>📅 {fmtDate(selDate)} · {league}</div>
@@ -786,7 +791,7 @@ function App(){
             Źródło: football-data.org (aktualne dane) · Model Poissona · Tylko informacyjnie
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-            <button onClick={()=>setAnalysis(null)} style={BTN2}>← INNE SPOTKANIE</button>
+            <button onClick={()=>setAnalysis(null)} style={BTN2}>← POWRÓT DO MECZÓW</button>
             <button onClick={()=>{setAnalysis(null);setDayData(null);setSelLeague("");setSelMatch("");}} style={BTN2}>📅 ZMIEŃ DZIEŃ</button>
           </div>
         </div>;
