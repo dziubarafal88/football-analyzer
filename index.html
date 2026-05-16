@@ -215,17 +215,7 @@ async function fetchH2H(matchId, token, onStatus) {
   } catch { return []; }
 }
 
-// ─── POISSON ──────────────────────────────────────────────────────────────────
-function pmf(l,k){if(l<=0)return k===0?1:0;let p=-l+k*Math.log(l);for(let i=1;i<=k;i++)p-=Math.log(i);return Math.exp(p);}
-function calcProbs(lH,lA){
-  let hw=0,dr=0,aw=0;
-  for(let h=0;h<=9;h++) for(let a=0;a<=9;a++){
-    const p=pmf(lH,h)*pmf(lA,a);
-    if(h>a)hw+=p; else if(h===a)dr+=p; else aw+=p;
-  }
-  const t=hw+dr+aw||1;
-  return{home:Math.round(hw/t*1000)/10,draw:Math.round(dr/t*1000)/10,away:Math.round(aw/t*1000)/10};
-}
+
 
 // ─── CALENDAR ─────────────────────────────────────────────────────────────────
 const MPL=["Styczeń","Luty","Marzec","Kwiecień","Maj","Czerwiec","Lipiec","Sierpień","Wrzesień","Październik","Listopad","Grudzień"];
