@@ -21,10 +21,13 @@ const {useState,useMemo}=React;
 
 // ─── FOOTBALL-DATA.ORG API — CORS: * — DARMOWY ───────────────────────────────
 const BASE = "https://api.football-data.org/v4";
+const PROXY = "https://corsproxy.io/?url=";
 
 async function fdGet(path, token) {
-  const sep = path.includes("?") ? "&" : "?";
-  const res = await fetch(`${BASE}/${path}${sep}token=${token}`);
+  const url = encodeURIComponent(`${BASE}/${path}`);
+  const res = await fetch(`${PROXY}${url}`, {
+    headers: { "X-Auth-Token": token }
+  });
   if (!res.ok) {
     const j = await res.json().catch(() => ({}));
     throw new Error(j.message || `HTTP ${res.status}`);
