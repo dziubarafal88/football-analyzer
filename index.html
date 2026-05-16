@@ -17,7 +17,7 @@ select option{background:#1e293b;color:#f1f5f9}
 </head>
 <body><div id="root"></div>
 <script type="text/babel">
-const {useState,useMemo}=React;
+const {useState,useMemo,useRef,useEffect}=React;
 
 // ─── FOOTBALL-DATA.ORG API ───────────────────────────────────────────────────
 const BASE = "https://api.football-data.org/v4";
@@ -296,6 +296,10 @@ function App(){
   const[remisy,setRemisy]=useState([]);
   const[loadRem,setLoadRem]=useState(false);
 
+  // Ref zawsze trzyma aktualny selDate — fix stale closure w handleFetchDay
+  const selDateRef=useRef(selDate);
+  useEffect(()=>{selDateRef.current=selDate;},[selDate]);
+
   const leagueOpts=useMemo(()=>(dayData?.leagues||[]).map(l=>({value:l.name,label:`${l.name} (${l.matches?.length||0})`})),[dayData]);
 
   const reset=()=>{setDayData(null);setSelLeague("");setSelMatch("");setAnalysis(null);setError(null);setMatchProbs({});};
@@ -311,9 +315,10 @@ function App(){
   };
 
   const handleFetchDay=async()=>{
+    const date=selDateRef.current; // zawsze aktualna data
     setLoadDay(true);setError(null);reset();
     try{
-      const data=await fetchDayMatches(selDate,token,setStatus);
+      const data=await fetchDayMatches(date,token,setStatus);
       setDayData(data);
     }catch(e){setError(e.message);}
     setLoadDay(false);setStatus("");
