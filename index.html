@@ -491,9 +491,15 @@ function App(){
       const hSusPenalty = Math.max(0.80, 1 - (hStats.suspended?.length||0)*0.07);
       const aSusPenalty = Math.max(0.80, 1 - (aStats.suspended?.length||0)*0.07);
 
-      // Lambda (expected goals) — atak × słabość obrony × śr. ligi × HA × forma × zawieszenia
-      const lH = Math.max(0.3,Math.min(4.5, (hAs/L)*(aAc/L)*L*H    *(0.85+hF*0.30)*hSusPenalty));
-      const lA = Math.max(0.3,Math.min(4.5, (aAs/L)*(hAc/L)*L      *(0.85+aF*0.30)*aSusPenalty));
+      // Korekta zmęczenia (udokumentowana statystycznie: <4 dni = -8% skuteczności)
+      const hRestDays = hRest ?? 7;
+      const aRestDays = aRest ?? 7;
+      const hFatigue = hRestDays < 4 ? 0.92 : hRestDays < 6 ? 0.97 : 1.0;
+      const aFatigue = aRestDays < 4 ? 0.92 : aRestDays < 6 ? 0.97 : 1.0;
+
+      // Lambda (expected goals) — atak × słabość obrony × śr. ligi × HA × forma × zawieszenia × zmęczenie
+      const lH = Math.max(0.3,Math.min(4.5, (hAs/L)*(aAc/L)*L*H*(0.85+hF*0.30)*hSusPenalty*hFatigue));
+      const lA = Math.max(0.3,Math.min(4.5, (aAs/L)*(hAc/L)*L  *(0.85+aF*0.30)*aSusPenalty*aFatigue));
       // calcProbs zawiera korekcję Dixon-Coles (ρ=-0.13) poprawiającą predykcję remisów
       const probs   = calcProbs(lH,lA);
       const markets = calcMarkets(lH,lA);
