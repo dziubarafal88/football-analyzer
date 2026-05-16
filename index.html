@@ -215,17 +215,12 @@ function App(){
   const[status,setStatus]=useState("");
   const[error,setError]=useState(null);
 
-  const leagueOpts=useMemo(()=>(dayData?.leagues||[]).map(l=>({value:l.name,label:`${l.name} (${l.matches?.length||0})`})),[dayData]);
-  const matchOpts=useMemo(()=>{
-    if(!dayData||!selLeague)return[];
-    const lg=dayData.leagues.find(l=>l.name===selLeague);
-    return(lg?.matches||[]).map(m=>({
-      value:JSON.stringify(m),
-      label:`${m.homeTeam} – ${m.awayTeam}${m.time&&m.time!=="TBD"?" · "+m.time:""}${m.score?" ("+m.score+")":""}`,
-    }));
-  },[dayData,selLeague]);
+  const[matchProbs,setMatchProbs]=useState({});  // {matchId: {home,draw,away}}
+  const[loadProbs,setLoadProbs]=useState(false);
 
-  const reset=()=>{setDayData(null);setSelLeague("");setSelMatch("");setAnalysis(null);setError(null);};
+  const leagueOpts=useMemo(()=>(dayData?.leagues||[]).map(l=>({value:l.name,label:`${l.name} (${l.matches?.length||0})`})),[dayData]);
+
+  const reset=()=>{setDayData(null);setSelLeague("");setSelMatch("");setAnalysis(null);setError(null);setMatchProbs({});};
 
   const handleConnect=async()=>{
     setError(null);
@@ -246,18 +241,47 @@ function App(){
     setLoadDay(false);setStatus("");
   };
 
-  const handleAnalyze=async()=>{
-    const match=JSON.parse(selMatch);
+  const handleSelectLeague=async(lgName)=>{
+    setSelLeague(lgName);setSelMatch("");setAnalysis(null);setMatchProbs({});
+    const lg=dayData.leagues.find(l=>l.name===lgName);
+    if(!lg?.code)return;
+    setLoadProbs(true);
+    try{
+      // Fetch standings once — enough to calc Poisson for all matches
+      const sd=await fdGet(`competitions/${lg.code}/standings`,token);
+      const tbl=sd.standings?.[0]?.table||[];
+      const probs={};
+      const L=1.35,H=1.12;
+      lg.matches.forEach(m=>{
+        const hr=tbl.find(r=>r.team?.id===m.homeId);
+        const ar=tbl.find(r=>r.team?.id===m.awayId);
+        if(!hr||!ar){probs[m.id]={home:33,draw:33,away:33};return;}
+        const hPlayed=hr.playedGames||1, aPlayed=ar.playedGames||1;
+        const hAs=hr.goalsFor/hPlayed, hAc=hr.goalsAgainst/hPlayed;
+        const aAs=ar.goalsFor/aPlayed, aAc=ar.goalsAgainst/aPlayed;
+        const lH=Math.max(0.3,Math.min(4.5,(hAs/L)*(aAc/L)*L*H));
+        const lA=Math.max(0.3,Math.min(4.5,(aAs/L)*(hAc/L)*L));
+        probs[m.id]=calcProbs(lH,lA);
+      });
+      setMatchProbs(probs);
+    }catch(e){/* silently fail - show matches without probs */}
+    setLoadProbs(false);
+  };
+
+  const handleAnalyze=async(match)=>{
     const lg=dayData.leagues.find(l=>l.name===selLeague);
+    setSelMatch(JSON.stringify(match));
     setAnalysis(null);setLoading(true);setError(null);
     try{
-      const[hStats,aStats,standings,h2h]=await Promise.all([
-        fetchTeamStats(match.homeId,lg?.code,token,setStatus,match.homeTeam),
-        fetchTeamStats(match.awayId,lg?.code,token,setStatus,match.awayTeam),
-        fetchStandings(lg?.code,match.homeId,match.awayId,token,setStatus),
-        fetchH2H(match.id,token,setStatus),
-      ]);
-      // Poisson
+      setStatus(`📊 Forma: ${match.homeTeam}...`);
+      const hStats=await fetchTeamStats(match.homeId,lg?.code,token,setStatus,match.homeTeam);
+      await sleep(700);
+      setStatus(`📊 Forma: ${match.awayTeam}...`);
+      const aStats=await fetchTeamStats(match.awayId,lg?.code,token,setStatus,match.awayTeam);
+      await sleep(700);
+      const standings=await fetchStandings(lg?.code,match.homeId,match.awayId,token,setStatus);
+      await sleep(700);
+      const h2h=await fetchH2H(match.id,token,setStatus);
       const L=1.35,H=1.12;
       const hF=hStats.form.length?hStats.form.reduce((a,f)=>a+(f.result==="W"?3:f.result==="D"?1:0),0)/(hStats.form.length*3):0.5;
       const aF=aStats.form.length?aStats.form.reduce((a,f)=>a+(f.result==="W"?3:f.result==="D"?1:0),0)/(aStats.form.length*3):0.5;
@@ -310,30 +334,59 @@ function App(){
         </div>
       </div>}
 
-      {/* ── KROK 2: LIGA + MECZ ── */}
+      {/* ── KROK 2: WYBÓR LIGI ── */}
       {dayData&&!analysis&&<div style={CARD}>
-        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}>
-          <div style={{width:26,height:26,borderRadius:"50%",background:selMatch?"#10b981":"#1e293b",color:selMatch?"#000":"#475569",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700}}>{selMatch?"✓":"2"}</div>
-          <span style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,letterSpacing:"0.1em",color:selMatch?"#34d399":"#f1f5f9"}}>WYBIERZ LIGĘ I MECZ</span>
+        <div style={{fontSize:11,letterSpacing:"0.09em",color:"#64748b",textTransform:"uppercase",marginBottom:10}}>🏆 Wybierz ligę</div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+          {leagueOpts.map(o=><button key={o.value} onClick={()=>handleSelectLeague(o.value)} style={{padding:"8px 14px",borderRadius:20,border:"1px solid",borderColor:selLeague===o.value?"#10b981":"#334155",background:selLeague===o.value?"#10b981":"transparent",color:selLeague===o.value?"#000":"#94a3b8",fontSize:12,fontWeight:600,cursor:"pointer"}}>{o.value}</button>)}
         </div>
-        <div style={{fontSize:11,letterSpacing:"0.09em",color:"#64748b",textTransform:"uppercase",marginBottom:7}}>🏆 Liga — {leagueOpts.length} z meczami</div>
-        <div style={{marginBottom:14}}>
-          <select value={selLeague} onChange={e=>{setSelLeague(e.target.value);setSelMatch("");}} style={SEL_S}>
-            <option value="" disabled>Wybierz ligę...</option>
-            {leagueOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
-        {selLeague&&<>
-          <div style={{fontSize:11,letterSpacing:"0.09em",color:"#64748b",textTransform:"uppercase",marginBottom:7}}>⚽ Mecz — {matchOpts.length} spotkań</div>
-          <div style={{marginBottom:14}}>
-            <select value={selMatch} onChange={e=>setSelMatch(e.target.value)} style={SEL_S}>
-              <option value="" disabled>Wybierz mecz...</option>
-              {matchOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-          </div>
-        </>}
-        {selMatch&&<button onClick={handleAnalyze} disabled={busy} style={{...BTN,opacity:busy?0.5:1}}>{loading?"⟳ ANALIZUJĘ...":"▶ ANALIZUJ MECZ"}</button>}
       </div>}
+
+      {/* ── KROK 3: LISTA MECZÓW Z PROCENTAMI ── */}
+      {dayData&&selLeague&&!analysis&&(()=>{
+        const lg=dayData.leagues.find(l=>l.name===selLeague);
+        const matches=lg?.matches||[];
+        return<div>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+            <span style={{fontFamily:"'Bebas Neue',cursive",fontSize:20,color:"#f1f5f9",letterSpacing:"0.06em"}}>{selLeague}</span>
+            {loadProbs&&<span style={{fontSize:12,color:"#6ee7b7",display:"flex",alignItems:"center",gap:6}}><span style={{animation:"spin 1s linear infinite",display:"inline-block"}}>⟳</span>obliczam...</span>}
+          </div>
+          {matches.map(m=>{
+            const p=matchProbs[m.id];
+            const best=p?Math.max(p.home,p.draw,p.away):null;
+            const hc=p?(p.home===best?"#10b981":p.home>p.away?"#6ee7b7":"#ef4444"):"#64748b";
+            const ac=p?(p.away===best?"#10b981":p.away>p.home?"#6ee7b7":"#ef4444"):"#64748b";
+            return<button key={m.id} onClick={()=>handleAnalyze(m)} disabled={busy} style={{width:"100%",background:"#0f172a",border:"1px solid #1e293b",borderRadius:14,padding:"14px 16px",marginBottom:10,cursor:"pointer",textAlign:"left",opacity:busy?0.6:1}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:p?10:0}}>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:700,color:"#f1f5f9"}}>{m.homeTeam}</div>
+                  <div style={{fontSize:11,color:"#475569",marginTop:2}}>{m.time}{m.score?" · "+m.score:""}</div>
+                </div>
+                <div style={{fontSize:12,fontWeight:700,color:"#475569",margin:"0 10px"}}>VS</div>
+                <div style={{flex:1,textAlign:"right"}}>
+                  <div style={{fontSize:13,fontWeight:700,color:"#f1f5f9"}}>{m.awayTeam}</div>
+                </div>
+              </div>
+              {p&&<div style={{display:"flex",gap:6,marginTop:8}}>
+                <div style={{flex:1,background:"#1e293b",borderRadius:8,padding:"6px 4px",textAlign:"center"}}>
+                  <div style={{fontSize:10,color:"#64748b",marginBottom:2}}>gosp.</div>
+                  <div style={{fontSize:18,fontWeight:900,color:hc}}>{p.home}%</div>
+                </div>
+                <div style={{flex:1,background:"#1e293b",borderRadius:8,padding:"6px 4px",textAlign:"center"}}>
+                  <div style={{fontSize:10,color:"#64748b",marginBottom:2}}>remis</div>
+                  <div style={{fontSize:18,fontWeight:900,color:"#f59e0b"}}>{p.draw}%</div>
+                </div>
+                <div style={{flex:1,background:"#1e293b",borderRadius:8,padding:"6px 4px",textAlign:"center"}}>
+                  <div style={{fontSize:10,color:"#64748b",marginBottom:2}}>gość.</div>
+                  <div style={{fontSize:18,fontWeight:900,color:ac}}>{p.away}%</div>
+                </div>
+              </div>}
+              {!p&&loadProbs&&<div style={{marginTop:8,fontSize:11,color:"#475569",textAlign:"center"}}>⟳ obliczam...</div>}
+              <div style={{marginTop:8,fontSize:11,color:"#334155",textAlign:"center"}}>tap → pełna analiza z formą i H2H</div>
+            </button>;
+          })}
+        </div>;
+      })()}
 
       {/* ── KROK 3: ANALIZA ── */}
       {analysis&&(()=>{
