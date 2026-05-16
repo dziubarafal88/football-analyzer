@@ -215,8 +215,11 @@ function App(){
   const[status,setStatus]=useState("");
   const[error,setError]=useState(null);
 
-  const[matchProbs,setMatchProbs]=useState({});  // {matchId: {home,draw,away}}
+  const[matchProbs,setMatchProbs]=useState({});
   const[loadProbs,setLoadProbs]=useState(false);
+  const[view,setView]=useState('leagues'); // 'leagues' | 'pewniaki'
+  const[pewniaki,setPewniaki]=useState([]); // [{match,league,probs}]
+  const[loadPew,setLoadPew]=useState(false);
 
   const leagueOpts=useMemo(()=>(dayData?.leagues||[]).map(l=>({value:l.name,label:`${l.name} (${l.matches?.length||0})`})),[dayData]);
 
@@ -266,6 +269,35 @@ function App(){
       setMatchProbs(probs);
     }catch(e){/* silently fail - show matches without probs */}
     setLoadProbs(false);
+  };
+
+  const handlePewniaki=async()=>{
+    setView('pewniaki');setLoadPew(true);setPewniaki([]);setError(null);
+    const L=1.35,H=1.12;
+    const results=[];
+    for(const lg of (dayData?.leagues||[])){
+      if(!lg.code)continue;
+      try{
+        const sd=await fdGet(`competitions/${lg.code}/standings`,token);
+        const tbl=sd.standings?.[0]?.table||[];
+        lg.matches.forEach(m=>{
+          const hr=tbl.find(r=>r.team?.id===m.homeId);
+          const ar=tbl.find(r=>r.team?.id===m.awayId);
+          if(!hr||!ar)return;
+          const hp=hr.playedGames||1,ap=ar.playedGames||1;
+          const lH=Math.max(0.3,Math.min(4.5,((hr.goalsFor/hp)/L)*((ar.goalsAgainst/ap)/L)*L*H));
+          const lA=Math.max(0.3,Math.min(4.5,((ar.goalsFor/ap)/L)*((hr.goalsAgainst/hp)/L)*L));
+          const p=calcProbs(lH,lA);
+          if(p.home>50||p.away>50){
+            results.push({match:m,league:lg.name,leagueCode:lg.code,probs:p});
+          }
+        });
+        await sleep(700);
+      }catch{}
+    }
+    results.sort((a,b)=>Math.max(b.probs.home,b.probs.away)-Math.max(a.probs.home,a.probs.away));
+    setPewniaki(results);
+    setLoadPew(false);
   };
 
   const handleAnalyze=async(match)=>{
@@ -334,12 +366,52 @@ function App(){
         </div>
       </div>}
 
-      {/* ── KROK 2: WYBÓR LIGI ── */}
-      {dayData&&!analysis&&<div style={CARD}>
-        <div style={{fontSize:11,letterSpacing:"0.09em",color:"#64748b",textTransform:"uppercase",marginBottom:10}}>🏆 Wybierz ligę</div>
-        <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
-          {leagueOpts.map(o=><button key={o.value} onClick={()=>handleSelectLeague(o.value)} style={{padding:"8px 14px",borderRadius:20,border:"1px solid",borderColor:selLeague===o.value?"#10b981":"#334155",background:selLeague===o.value?"#10b981":"transparent",color:selLeague===o.value?"#000":"#94a3b8",fontSize:12,fontWeight:600,cursor:"pointer"}}>{o.value}</button>)}
+      {/* ── KROK 2: NAWIGACJA ── */}
+      {dayData&&!analysis&&<div style={{marginBottom:14}}>
+        <div style={{display:"flex",gap:8,marginBottom:12}}>
+          <button onClick={()=>{setView('leagues');setSelLeague('');}} style={{flex:1,padding:"10px",borderRadius:10,border:"1px solid",borderColor:view==='leagues'?"#10b981":"#334155",background:view==='leagues'?"#10b981":"#0f172a",color:view==='leagues'?"#000":"#94a3b8",fontSize:13,fontWeight:700,cursor:"pointer"}}>🏆 LIGI</button>
+          <button onClick={handlePewniaki} style={{flex:1,padding:"10px",borderRadius:10,border:"1px solid",borderColor:view==='pewniaki'?"#f59e0b":"#334155",background:view==='pewniaki'?"#f59e0b":"#0f172a",color:view==='pewniaki'?"#000":"#f59e0b",fontSize:13,fontWeight:700,cursor:"pointer"}}>🔥 PEWNIAKI</button>
         </div>
+        {view==='leagues'&&<div style={{...CARD,marginBottom:0}}>
+          <div style={{fontSize:11,letterSpacing:"0.09em",color:"#64748b",textTransform:"uppercase",marginBottom:10}}>🏆 Wybierz ligę</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+            {leagueOpts.map(o=><button key={o.value} onClick={()=>handleSelectLeague(o.value)} style={{padding:"8px 14px",borderRadius:20,border:"1px solid",borderColor:selLeague===o.value?"#10b981":"#334155",background:selLeague===o.value?"#10b981":"transparent",color:selLeague===o.value?"#000":"#94a3b8",fontSize:12,fontWeight:600,cursor:"pointer"}}>{o.value}</button>)}
+          </div>
+        </div>}
+      </div>}
+
+      {/* ── PEWNIAKI ── */}
+      {dayData&&view==='pewniaki'&&!analysis&&<div>
+        {loadPew&&<div style={{background:"#022c22",border:"1px solid #065f46",borderRadius:12,padding:"12px 16px",color:"#6ee7b7",fontSize:13,marginBottom:14,display:"flex",alignItems:"center",gap:10}}><span style={{animation:"spin 1s linear infinite",display:"inline-block"}}>⟳</span>Analizuję wszystkie ligi...</div>}
+        {!loadPew&&pewniaki.length===0&&<div style={{...CARD,textAlign:"center",color:"#64748b"}}>Brak pewnych typów na ten dzień (wszystkie mecze poniżej 50%).</div>}
+        {pewniaki.map(({match,league,probs},i)=>{
+          const hWin=probs.home>probs.away;
+          const favProb=hWin?probs.home:probs.away;
+          const favTeam=hWin?match.homeTeam:match.awayTeam;
+          return<button key={match.id} onClick={()=>{setSelLeague(league);handleAnalyze(match);}} disabled={busy} style={{width:"100%",background:"#0f172a",border:"2px solid #f59e0b",borderRadius:14,padding:"14px 16px",marginBottom:10,cursor:"pointer",textAlign:"left"}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+              <span style={{fontSize:10,color:"#f59e0b",fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase"}}>{league}</span>
+              <span style={{fontSize:10,color:"#475569"}}>{match.time}</span>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+              <span style={{flex:1,fontSize:13,fontWeight:700,color:"#f1f5f9"}}>{match.homeTeam}</span>
+              <span style={{fontSize:11,color:"#475569"}}>VS</span>
+              <span style={{flex:1,fontSize:13,fontWeight:700,color:"#f1f5f9",textAlign:"right"}}>{match.awayTeam}</span>
+            </div>
+            <div style={{background:"#1a2a0a",borderRadius:8,padding:"10px 14px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+              <div>
+                <div style={{fontSize:10,color:"#6ee7b7",marginBottom:2}}>🔥 FAWORYT</div>
+                <div style={{fontSize:14,fontWeight:700,color:"#f1f5f9"}}>{favTeam}</div>
+              </div>
+              <div style={{fontFamily:"monospace",fontSize:32,fontWeight:900,color:"#10b981"}}>{favProb}%</div>
+            </div>
+            <div style={{display:"flex",gap:6,marginTop:8}}>
+              <div style={{flex:1,textAlign:"center",fontSize:11,color:probs.home>50?"#10b981":"#64748b",fontWeight:probs.home>50?700:400}}>{match.homeTeam.split(' ')[0]} {probs.home}%</div>
+              <div style={{flex:1,textAlign:"center",fontSize:11,color:"#f59e0b"}}>Remis {probs.draw}%</div>
+              <div style={{flex:1,textAlign:"center",fontSize:11,color:probs.away>50?"#10b981":"#64748b",fontWeight:probs.away>50?700:400}}>{match.awayTeam.split(' ')[0]} {probs.away}%</div>
+            </div>
+          </button>;
+        })}
       </div>}
 
       {/* ── KROK 3: LISTA MECZÓW Z PROCENTAMI ── */}
