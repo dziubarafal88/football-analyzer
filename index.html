@@ -69,7 +69,7 @@ async function fetchDayMatches(dateStr, token, onStatus) {
 // Pobierz formę drużyny + statystyki z bieżącego sezonu
 async function fetchTeamStats(teamId, compCode, token, onStatus, label) {
   onStatus(`📊 Forma: ${label}...`);
-  await sleep(700); // rate limit: 10 req/min
+  await sleep(700);
 
   const data = await fdGet(
     `teams/${teamId}/matches?status=FINISHED&limit=10${compCode ? "&competitions=" + compCode : ""}`,
@@ -98,7 +98,28 @@ async function fetchTeamStats(teamId, compCode, token, onStatus, label) {
   });
 
   const n = last10.length || 1;
-  return { form, avgScored: scored / n, avgConceded: conceded / n };
+
+  // ── Kartki z ostatnich 3 meczów ──
+  onStatus(`🟨 Kartki: ${label}...`);
+  const suspended = [], yellowCount = {};
+  const last3 = matches.slice(-3);
+  for (let i = 0; i < last3.length; i++) {
+    await sleep(500);
+    try {
+      const det = await fdGet(`matches/${last3[i].id}`, token);
+      const bookings = det.bookings || [];
+      const isLastMatch = i === last3.length - 1;
+      bookings.forEach(b => {
+        if (b.team?.id !== teamId) return;
+        const name = b.player?.name || "Nieznany";
+        if (b.type === "YELLOW_CARD") yellowCount[name] = (yellowCount[name] || 0) + 1;
+        if (isLastMatch && (b.type === "RED_CARD" || b.type === "YELLOW_RED_CARD")) suspended.push(name);
+      });
+    } catch {}
+  }
+  const yellowRisk = Object.entries(yellowCount).filter(([,v]) => v >= 2).map(([k,v]) => ({name:k, count:v}));
+
+  return { form, avgScored: scored / n, avgConceded: conceded / n, suspended, yellowRisk };
 }
 
 async function fetchStandings(compCode, homeId, awayId, token, onStatus) {
@@ -317,8 +338,11 @@ function App(){
       const L=1.35,H=1.12;
       const hF=hStats.form.length?hStats.form.reduce((a,f)=>a+(f.result==="W"?3:f.result==="D"?1:0),0)/(hStats.form.length*3):0.5;
       const aF=aStats.form.length?aStats.form.reduce((a,f)=>a+(f.result==="W"?3:f.result==="D"?1:0),0)/(aStats.form.length*3):0.5;
-      const lH=Math.max(0.3,Math.min(4.5,(hStats.avgScored/L)*(aStats.avgConceded/L)*L*H*(0.85+hF*0.3)));
-      const lA=Math.max(0.3,Math.min(4.5,(aStats.avgScored/L)*(hStats.avgConceded/L)*L*(0.85+aF*0.3)));
+      // Kara za zawieszone zawodników (-7% za każdego zawieszonego)
+      const hSusPenalty=Math.max(0.8,1-(hStats.suspended?.length||0)*0.07);
+      const aSusPenalty=Math.max(0.8,1-(aStats.suspended?.length||0)*0.07);
+      const lH=Math.max(0.3,Math.min(4.5,(hStats.avgScored/L)*(aStats.avgConceded/L)*L*H*(0.85+hF*0.3)*hSusPenalty));
+      const lA=Math.max(0.3,Math.min(4.5,(aStats.avgScored/L)*(hStats.avgConceded/L)*L*(0.85+aF*0.3)*aSusPenalty));
       setAnalysis({match,hStats,aStats,standings,h2h,lH,lA,probs:calcProbs(lH,lA),league:selLeague,season:"2024/25"});
     }catch(e){setError(e.message);}
     setLoading(false);setStatus("");
@@ -545,6 +569,26 @@ function App(){
               </div>
             ))}
           </div>
+
+          {/* Kartki i zawieszenia */}
+          {(hStats.suspended?.length>0||aStats.suspended?.length>0||hStats.yellowRisk?.length>0||aStats.yellowRisk?.length>0)&&<div style={CARD}>
+            <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,letterSpacing:"0.1em",color:"#f59e0b",marginBottom:14}}>🟨 KARTKI I ZAWIESZENIA</div>
+            {[{name:match.homeTeam,st:hStats},{name:match.awayTeam,st:aStats}].map(({name,st})=>(
+              <div key={name} style={{marginBottom:14}}>
+                <div style={{fontSize:13,fontWeight:700,color:"#f1f5f9",marginBottom:8}}>{name}</div>
+                {st.suspended?.length>0&&<div style={{background:"#450a0a",border:"1px solid #7f1d1d",borderRadius:8,padding:"8px 12px",marginBottom:6}}>
+                  <div style={{fontSize:10,color:"#fca5a5",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:4}}>🔴 ZAWIESZENI — czerwona karta w ostatnim meczu</div>
+                  {st.suspended.map((p,i)=><div key={i} style={{fontSize:14,color:"#ef4444",fontWeight:700,marginBottom:2}}>⛔ {p}</div>)}
+                  <div style={{fontSize:10,color:"#7f2020",marginTop:6}}>Korekta modelu: -{st.suspended.length*7}% siły ataku tej drużyny</div>
+                </div>}
+                {st.yellowRisk?.length>0&&<div style={{background:"#1f1500",border:"1px solid #78350f",borderRadius:8,padding:"8px 12px"}}>
+                  <div style={{fontSize:10,color:"#fbbf24",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:4}}>🟡 RYZYKO ZAWIESZENIA — 2+ żółtych w ost. 3 meczach</div>
+                  {st.yellowRisk.map((p,i)=><div key={i} style={{fontSize:13,color:"#f59e0b",marginBottom:2}}>⚠ {p.name} — {p.count}x żółta karta</div>)}
+                </div>}
+                {!st.suspended?.length&&!st.yellowRisk?.length&&<div style={{fontSize:12,color:"#475569"}}>✓ Brak zawieszeń ani ryzyka akumulacji</div>}
+              </div>
+            ))}
+          </div>}
 
           {/* H2H */}
           {h2h?.length>0&&<div style={CARD}>
