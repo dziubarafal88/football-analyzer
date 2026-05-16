@@ -758,11 +758,6 @@ function App(){
         </div>
       </div>}
 
-      {/* ── WYBÓR SPORTU ── */}
-      {connected&&(dayData||tennisData)&&!analysis&&!tennisAnalysis&&<div style={{display:"flex",gap:8,marginBottom:12}}>
-        <button onClick={()=>setSport('football')} style={{flex:1,padding:"10px",borderRadius:10,border:"1px solid",borderColor:sport==='football'?"#10b981":"#334155",background:sport==='football'?"#10b981":"#0f172a",color:sport==='football'?"#000":"#94a3b8",fontSize:13,fontWeight:700,cursor:"pointer"}}>⚽ PIŁKA NOŻNA</button>
-        <button onClick={()=>setSport('tennis')} style={{flex:1,padding:"10px",borderRadius:10,border:"1px solid",borderColor:sport==='tennis'?"#f59e0b":"#334155",background:sport==='tennis'?"#f59e0b":"#0f172a",color:sport==='tennis'?"#000":"#f59e0b",fontSize:13,fontWeight:700,cursor:"pointer"}}>🎾 TENIS</button>
-      </div>}
 
       {/* ── TENIS: KLUCZ ── */}
       {connected&&sport==='tennis'&&!tennisConnected&&!analysis&&<div style={CARD}>
