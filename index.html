@@ -995,7 +995,7 @@ function App(){
       // Zapisz predykcję do tracker'a (do walk-forward backtest)
       savePrediction(match.id, match.homeTeam, match.awayTeam, lg?.code, probs, match.utcDate);
 
-      setAnalysis({match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,halfTime,hMotiv,aMotiv,hRest,aRest,piDiff,hElo,aElo,league:selLeague,season:"2024/25"});
+      setAnalysis({match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,halfTime,hMotiv,aMotiv,hRest,aRest,piDiff,hElo,aElo,marketProbs,hGlicko,aGlicko,league:selLeague,season:"2025/26"});
     }catch(e){setError(e.message);}
     setLoading(false);setStatus("");
   };
@@ -1291,7 +1291,7 @@ function App(){
 
       {/* ── KROK 3: ANALIZA ── */}
       {analysis&&(()=>{
-        const{match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,halfTime,hMotiv,aMotiv,hRest,aRest,piDiff,hElo,aElo,league}=analysis;
+        const{match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,halfTime,hMotiv,aMotiv,hRest,aRest,piDiff,hElo,aElo,marketProbs,hGlicko,aGlicko,league}=analysis;
         const SR=({label,hv,av,lower})=>{
           const h=parseFloat(hv),a=parseFloat(av),hW=lower?h<a:h>a,aW=lower?a<h:a>h;
           return<div style={{display:"flex",alignItems:"center",padding:"7px 0",borderBottom:"1px solid #1e293b"}}>
@@ -1356,7 +1356,34 @@ function App(){
                 <div style={{fontSize:9,color:"#475569",textTransform:"uppercase",marginBottom:2}}>ELO</div>
                 <div style={{fontSize:12,fontWeight:700,color:"#f1f5f9"}}>{Math.round(hElo??1500)} vs {Math.round(aElo??1500)}</div>
               </div>
+              {hGlicko&&<div style={{flex:1,background:"#0f172a",borderRadius:8,padding:"6px 10px",textAlign:"center"}}>
+                <div style={{fontSize:9,color:"#475569",textTransform:"uppercase",marginBottom:2}}>Glicko-2</div>
+                <div style={{fontSize:12,fontWeight:700,color:"#f1f5f9"}}>±{Math.round(hGlicko.rd)}</div>
+              </div>}
             </div>
+            {marketProbs&&<div style={{marginTop:10,background:"#0f172a",borderRadius:8,padding:"8px 10px"}}>
+              <div style={{fontSize:9,color:"#475569",textTransform:"uppercase",marginBottom:4}}>📈 Porównanie z rynkiem (Pinnacle)</div>
+              <div style={{display:"flex",gap:6}}>
+                {[
+                  {name:"Gospod.",our:probs.home,mkt:Math.round(marketProbs.home*10)/10},
+                  {name:"Remis",our:probs.draw,mkt:Math.round(marketProbs.draw*10)/10},
+                  {name:"Gość",our:probs.away,mkt:Math.round(marketProbs.away*10)/10}
+                ].map(({name,our,mkt})=>{
+                  const diff = our - mkt;
+                  const isValue = Math.abs(diff) >= 5;
+                  return<div key={name} style={{flex:1,textAlign:"center"}}>
+                    <div style={{fontSize:9,color:"#64748b"}}>{name}</div>
+                    <div style={{fontSize:11,color:"#f1f5f9",fontFamily:"monospace"}}>{our}% vs {mkt}%</div>
+                    <div style={{fontSize:9,color:isValue?(diff>0?"#10b981":"#ef4444"):"#475569",fontWeight:isValue?700:400}}>
+                      {diff>0?"+":""}{Math.round(diff*10)/10}{isValue?(diff>0?" 💎":""):""}
+                    </div>
+                  </div>;
+                })}
+              </div>
+              <div style={{fontSize:9,color:"#475569",marginTop:4,lineHeight:1.4}}>
+                💎 = value bet (różnica ≥5% wskazuje że rynek niedocenia tego typu)
+              </div>
+            </div>}
           </div>
 
           {/* ── PIERWSZA POŁOWA ── */}
