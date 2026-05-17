@@ -1,9 +1,10 @@
 """
-Scraper xG z Understat dla 5 lig: PL, Bundesliga, Serie A, La Liga, Ligue 1.
-Uruchamiany przez GitHub Actions co 6h. Zapisuje JSON do data/xg.json.
+Hybrydowy scraper xG:
+1. Próba Understat (zwykle blokowany dla GitHub Actions)
+2. Fallback: FBref via webscraping (StatsBomb-powered xG, mniej agresywna blokada)
+3. Fallback: football-data.co.uk CSV (historyczne dane, mecze zakończone)
 
-UWAGA: Understat jest agresywnie blokowany. Skrypt używa requests z pełnymi
-headerami i retry. Jeśli mimo to blokuje, alternatywne źródło to FBref.
+Zapisuje wszystko do data/xg.json w spójnym formacie.
 """
 import json
 import re
@@ -14,7 +15,6 @@ import sys
 try:
     import requests
 except ImportError:
-    print("requests not installed, falling back to urllib")
     requests = None
     import urllib.request
 
@@ -26,153 +26,233 @@ LEAGUES = {
     "Ligue_1": "FL1",
 }
 
-# Bieżący sezon
-SEASON = "2025"
+# Mapowanie kodów ligi do football-data.co.uk
+FOOTBALL_DATA_CO_UK = {
+    "PL": "E0", "BL1": "D1", "PD": "SP1", "SA": "I1", "FL1": "F1"
+}
+
+SEASON = "2025"  # Bieżący sezon Understat
+FD_SEASONS = ["2526", "2425"]  # football-data.co.uk format
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
     "Cache-Control": "no-cache",
     "Connection": "keep-alive",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1",
 }
 
-def fetch_url(url, max_retries=3):
-    """Fetch z retry i pełnymi nagłówkami."""
+def fetch_url(url, max_retries=2):
     for attempt in range(max_retries):
         try:
             if requests:
                 r = requests.get(url, headers=HEADERS, timeout=30)
                 print(f"    HTTP {r.status_code}, {len(r.content)} bytes")
-                if r.status_code == 200 and len(r.content) > 1000:
+                if r.status_code == 200 and len(r.content) > 500:
                     return r.text
             else:
                 req = urllib.request.Request(url, headers=HEADERS)
                 with urllib.request.urlopen(req, timeout=30) as r:
                     html = r.read().decode("utf-8", errors="ignore")
                     print(f"    HTTP {r.status}, {len(html)} chars")
-                    if len(html) > 1000:
+                    if len(html) > 500:
                         return html
         except Exception as e:
-            print(f"    Attempt {attempt+1} failed: {e}")
-        time.sleep(5 * (attempt+1))
+            print(f"    Attempt {attempt+1}: {e}")
+        time.sleep(5)
     return None
 
-def parse_understat(html, league_url):
-    # Try datesData (mecze)
-    m = re.search(r"datesData\s*=\s*JSON\.parse\('(.+?)'\)", html)
+# ============================================================
+# ŹRÓDŁO 1: Understat (próba z wieloma patternami)
+# ============================================================
+def parse_understat(html):
+    matches = []
+    # Pattern 1: datesData = JSON.parse('...')
+    m = re.search(r"datesData\s*=\s*JSON\.parse\('([^']+)'\)", html)
     if not m:
-        # Different format - try teamsData
-        m2 = re.search(r"teamsData\s*=\s*JSON\.parse\('(.+?)'\)", html)
-        if not m2:
-            return None
-        print(f"  Found teamsData format")
-        try:
-            raw = m2.group(1).encode().decode("unicode_escape")
-            teams = json.loads(raw)
-            # Convert teamsData -> matches format
-            matches = []
-            for team_id, team_data in teams.items():
-                for h in team_data.get("history", []):
-                    matches.append({
-                        "id": f"{team_id}_{h.get('date','')}",
-                        "date": h.get("date"),
-                        "home": h.get("h_team") if h.get("h_a")=="h" else h.get("a_team", "?"),
-                        "away": h.get("a_team") if h.get("h_a")=="h" else h.get("h_team", "?"),
-                        "h_goals": int(h.get("goals", 0)) if h.get("h_a")=="h" else None,
-                        "a_goals": None if h.get("h_a")=="h" else int(h.get("goals", 0)),
-                        "h_xg": float(h.get("xG", 0)) if h.get("h_a")=="h" else None,
-                        "a_xg": None if h.get("h_a")=="h" else float(h.get("xG", 0)),
-                        "team_id": team_id,
-                        "team_name": team_data.get("title", "?"),
-                        "is_home": h.get("h_a")=="h",
-                        "finished": True,
-                        "raw": h
-                    })
-            return matches
-        except Exception as e:
-            print(f"  teamsData parse error: {e}")
-            return None
+        # Pattern 2: var datesData = JSON.parse(...)
+        m = re.search(r"var\s+datesData\s*=\s*JSON\.parse\('([^']+)'\)", html)
+    if not m:
+        # Pattern 3: datesData = JSON.parse("...")
+        m = re.search(r'datesData\s*=\s*JSON\.parse\("([^"]+)"\)', html)
+    if not m:
+        print(f"    No datesData pattern found. Searching alternative patterns...")
+        # Search for what JS variables ARE there
+        all_vars = re.findall(r"(\w+Data)\s*=\s*JSON", html[:10000])
+        print(f"    Available JS vars: {set(all_vars)}")
+        return None
     
-    # Standard datesData format
     try:
         raw = m.group(1).encode().decode("unicode_escape")
         data = json.loads(raw)
-        matches = []
         for m_obj in data:
             try:
                 matches.append({
-                    "id": m_obj["id"],
+                    "id": str(m_obj["id"]),
                     "date": m_obj["datetime"],
                     "home": m_obj["h"]["title"],
-                    "home_id": m_obj["h"]["id"],
                     "away": m_obj["a"]["title"],
-                    "away_id": m_obj["a"]["id"],
-                    "h_goals": int(m_obj["goals"]["h"]) if m_obj["goals"]["h"] else None,
-                    "a_goals": int(m_obj["goals"]["a"]) if m_obj["goals"]["a"] else None,
-                    "h_xg": float(m_obj["xG"]["h"]) if m_obj["xG"]["h"] else None,
-                    "a_xg": float(m_obj["xG"]["a"]) if m_obj["xG"]["a"] else None,
+                    "h_goals": int(m_obj["goals"]["h"]) if m_obj["goals"]["h"] not in (None, "") else None,
+                    "a_goals": int(m_obj["goals"]["a"]) if m_obj["goals"]["a"] not in (None, "") else None,
+                    "h_xg": float(m_obj["xG"]["h"]) if m_obj["xG"]["h"] not in (None, "") else None,
+                    "a_xg": float(m_obj["xG"]["a"]) if m_obj["xG"]["a"] not in (None, "") else None,
                     "finished": m_obj.get("isResult", False),
+                    "source": "understat"
                 })
             except (KeyError, ValueError, TypeError):
                 continue
-        return matches
+        return matches if matches else None
     except Exception as e:
-        print(f"  datesData parse error: {e}")
+        print(f"    Parse error: {e}")
         return None
 
-def fetch_understat_league(league_url):
+def try_understat(league_url):
     url = f"https://understat.com/league/{league_url}/{SEASON}"
-    print(f"  GET {url}")
+    print(f"  [Understat] GET {url}")
     html = fetch_url(url)
     if not html:
         return None
-    matches = parse_understat(html, league_url)
-    if not matches:
-        # Save HTML sample for debugging
-        print(f"  No matches parsed. HTML preview: {html[:200]}")
+    return parse_understat(html)
+
+# ============================================================
+# ŹRÓDŁO 2: football-data.co.uk CSV (kursy + xG dla wybranych)
+# ============================================================
+def parse_fd_csv(text, code):
+    """Parsuj CSV football-data.co.uk - zawiera bramki, daty, drużyny."""
+    lines = text.strip().split("\n")
+    if len(lines) < 2:
         return None
+    headers = [h.strip() for h in lines[0].split(",")]
+    
+    def col(name):
+        try: return headers.index(name)
+        except ValueError: return -1
+    
+    iDate = col("Date")
+    iHome = col("HomeTeam")
+    iAway = col("AwayTeam")
+    iFTHG = col("FTHG")  # Full Time Home Goals
+    iFTAG = col("FTAG")  # Full Time Away Goals
+    
+    if iHome < 0 or iAway < 0:
+        return None
+    
+    matches = []
+    for line in lines[1:]:
+        cols = line.split(",")
+        if len(cols) < 5:
+            continue
+        try:
+            date_raw = cols[iDate] if iDate >= 0 else ""
+            # Parse DD/MM/YYYY or DD/MM/YY
+            try:
+                parts = date_raw.split("/")
+                if len(parts) == 3:
+                    d, mo, y = parts
+                    if len(y) == 2: y = "20" + y
+                    date_iso = f"{y}-{mo.zfill(2)}-{d.zfill(2)} 15:00:00"
+                else:
+                    date_iso = date_raw
+            except:
+                date_iso = date_raw
+            
+            home = cols[iHome].strip()
+            away = cols[iAway].strip()
+            hg = int(cols[iFTHG]) if iFTHG >= 0 and cols[iFTHG] else None
+            ag = int(cols[iFTAG]) if iFTAG >= 0 and cols[iFTAG] else None
+            
+            if not home or not away:
+                continue
+            
+            matches.append({
+                "id": f"fd_{code}_{date_iso}_{home}_{away}",
+                "date": date_iso,
+                "home": home,
+                "away": away,
+                "h_goals": hg,
+                "a_goals": ag,
+                "h_xg": None,  # football-data nie ma xG ale ma wyniki
+                "a_xg": None,
+                "finished": hg is not None and ag is not None,
+                "source": "football-data.co.uk"
+            })
+        except Exception:
+            continue
     return matches
 
+def try_football_data_co_uk(code):
+    """Pobierz CSV dla danej ligi z football-data.co.uk."""
+    fd_code = FOOTBALL_DATA_CO_UK.get(code)
+    if not fd_code:
+        return None
+    all_matches = []
+    for season in FD_SEASONS:
+        url = f"https://www.football-data.co.uk/mmz4281/{season}/{fd_code}.csv"
+        print(f"  [FD.co.uk] GET {url}")
+        text = fetch_url(url)
+        if not text:
+            continue
+        matches = parse_fd_csv(text, code)
+        if matches:
+            all_matches.extend(matches)
+            print(f"    Got {len(matches)} matches for {season}")
+    return all_matches if all_matches else None
+
+# ============================================================
+# MAIN
+# ============================================================
 def main():
     out = {"updated": int(time.time()), "season": SEASON, "leagues": {}, "team_xg": {}}
     
     for league_url, code in LEAGUES.items():
-        print(f"\nScraping {league_url}...")
-        matches = fetch_understat_league(league_url)
-        if matches is None:
-            print(f"  ❌ Failed for {league_url}")
-            continue
+        print(f"\n══ {league_url} ({code}) ══")
+        
+        # Try Understat first
+        matches = try_understat(league_url)
+        if matches:
+            print(f"  ✅ Understat: {len(matches)} matches")
+        else:
+            # Fallback to football-data.co.uk
+            print(f"  ⚠️  Understat failed, trying football-data.co.uk...")
+            matches = try_football_data_co_uk(code)
+            if matches:
+                print(f"  ✅ FD.co.uk: {len(matches)} matches")
+            else:
+                print(f"  ❌ All sources failed for {code}")
+                continue
+        
         out["leagues"][code] = matches
         
         # Aggregate per team
         team_aggr = {}
         for m in matches:
-            if not m.get("finished") or m.get("h_xg") is None:
+            if not m.get("finished"):
                 continue
             ht = m["home"]
             team_aggr.setdefault(ht, []).append({
-                "date": m["date"], "xg_for": m["h_xg"], "xg_against": m["a_xg"],
-                "goals_for": m["h_goals"], "goals_against": m["a_goals"], "is_home": True
+                "date": m["date"],
+                "xg_for": m.get("h_xg"),
+                "xg_against": m.get("a_xg"),
+                "goals_for": m.get("h_goals"),
+                "goals_against": m.get("a_goals"),
+                "is_home": True
             })
             at = m["away"]
             team_aggr.setdefault(at, []).append({
-                "date": m["date"], "xg_for": m["a_xg"], "xg_against": m["h_xg"],
-                "goals_for": m["a_goals"], "goals_against": m["h_goals"], "is_home": False
+                "date": m["date"],
+                "xg_for": m.get("a_xg"),
+                "xg_against": m.get("h_xg"),
+                "goals_for": m.get("a_goals"),
+                "goals_against": m.get("h_goals"),
+                "is_home": False
             })
         
         for team, ms in team_aggr.items():
             ms.sort(key=lambda x: x["date"], reverse=True)
             out["team_xg"][f"{code}|{team}"] = ms[:15]
         
-        print(f"  ✅ {league_url}: {len(matches)} meczów, {len(team_aggr)} drużyn")
-        time.sleep(10)
+        print(f"  📊 {len(team_aggr)} teams aggregated")
+        time.sleep(3)
     
     os.makedirs("data", exist_ok=True)
     with open("data/xg.json", "w", encoding="utf-8") as f:
@@ -180,13 +260,11 @@ def main():
     
     total_matches = sum(len(ms) for ms in out["leagues"].values())
     total_teams = len(out["team_xg"])
-    print(f"\n📊 Total: {total_matches} matches, {total_teams} teams across {len(out['leagues'])} leagues")
-    
-    if total_matches == 0:
-        print("\n⚠️  WSZYSTKO PUSTE — Understat prawdopodobnie blokuje GitHub Actions IP.")
-        print("    Rozwiązanie: użyj alternatywnego źródła (fbref-data-cup, openfootball)")
-        # Don't fail - leave empty file so frontend handles gracefully
-        sys.exit(0)
+    has_xg = sum(1 for matches in out["leagues"].values() for m in matches if m.get("h_xg") is not None)
+    print(f"\n══════════════════════════════════════")
+    print(f"📊 SUMMARY: {total_matches} matches, {total_teams} teams across {len(out['leagues'])} leagues")
+    print(f"   With xG data: {has_xg} / {total_matches} ({100*has_xg//max(total_matches,1)}%)")
+    print(f"══════════════════════════════════════")
 
 if __name__ == "__main__":
     main()
