@@ -178,6 +178,92 @@ function eloToProbs(eloH, eloA) {
   return { home: pH/t, draw: pD/t, away: pA/t };
 }
 
+// ── GLICKO-2 (Glickman 2012) ──────────────────────────────────────────────────
+// Rozszerzenie ELO o rating deviation (RD) i volatility (σ).
+// Lepiej obsługuje "cold start" dla nowych drużyn i daje przedziały ufności.
+const GLICKO2_TAU = 0.5; // volatility coefficient
+const GLICKO2_SCALE = 173.7178; // rating scale conversion
+
+function glicko2FromMatches(matches, teamId) {
+  let mu = 0;       // rating w skali Glicko-2 (start 1500 → mu=0)
+  let phi = 350 / GLICKO2_SCALE;  // RD w skali Glicko-2
+  let sigma = 0.06; // volatility
+
+  matches.forEach(m => {
+    const isHome = m.homeTeam?.id === teamId;
+    const gs = (isHome ? m.score?.fullTime?.home : m.score?.fullTime?.away) ?? 0;
+    const gc = (isHome ? m.score?.fullTime?.away : m.score?.fullTime?.home) ?? 0;
+    const s = gs > gc ? 1 : gs === gc ? 0.5 : 0;
+    // Opponent assumed 1500 (mu_opp=0, phi_opp=350/scale) - uproszczenie
+    const muOpp = 0;
+    const phiOpp = 200 / GLICKO2_SCALE;
+
+    const g = 1 / Math.sqrt(1 + 3 * phiOpp * phiOpp / (Math.PI * Math.PI));
+    const E = 1 / (1 + Math.exp(-g * (mu - muOpp)));
+    const v = 1 / (g * g * E * (1 - E));
+    const delta = v * g * (s - E);
+
+    // Iteracyjne wyliczenie nowej volatility (Mark 1 Glicko-2 paper, krok 5)
+    const a = Math.log(sigma * sigma);
+    const tau2 = GLICKO2_TAU * GLICKO2_TAU;
+    const f = x => {
+      const ex = Math.exp(x);
+      const num = ex * (delta * delta - phi * phi - v - ex);
+      const den = 2 * (phi * phi + v + ex) * (phi * phi + v + ex);
+      return num / den - (x - a) / tau2;
+    };
+    // Illinois algorithm dla rozwiązania f(x)=0 — uproszczone bisection
+    let A = a, B;
+    if (delta * delta > phi * phi + v) {
+      B = Math.log(delta * delta - phi * phi - v);
+    } else {
+      let k = 1;
+      while (f(a - k * GLICKO2_TAU) < 0) k++;
+      B = a - k * GLICKO2_TAU;
+    }
+    let fA = f(A), fB = f(B);
+    for (let i = 0; i < 20 && Math.abs(B - A) > 0.000001; i++) {
+      const C = A + (A - B) * fA / (fB - fA);
+      const fC = f(C);
+      if (fC * fB < 0) { A = B; fA = fB; }
+      else { fA = fA / 2; }
+      B = C; fB = fC;
+    }
+    sigma = Math.exp(A / 2);
+
+    const phiStar = Math.sqrt(phi * phi + sigma * sigma);
+    phi = 1 / Math.sqrt(1 / (phiStar * phiStar) + 1 / v);
+    mu = mu + phi * phi * g * (s - E);
+  });
+
+  return {
+    rating: mu * GLICKO2_SCALE + 1500,
+    rd: phi * GLICKO2_SCALE,
+    volatility: sigma
+  };
+}
+
+function glicko2ToProbs(homeG, awayG, hfa = 100) {
+  // Modyfikacja: skoryguj rating gospodarzy o HFA, zwiększ phi z uwzględnieniem RD obu drużyn
+  const muH = (homeG.rating + hfa - 1500) / GLICKO2_SCALE;
+  const muA = (awayG.rating - 1500) / GLICKO2_SCALE;
+  const phiH = homeG.rd / GLICKO2_SCALE;
+  const phiA = awayG.rd / GLICKO2_SCALE;
+  const phiCombined = Math.sqrt(phiH * phiH + phiA * phiA);
+  const g = 1 / Math.sqrt(1 + 3 * phiCombined * phiCombined / (Math.PI * Math.PI));
+  const pH = 1 / (1 + Math.exp(-g * (muH - muA)));
+  const pA = 1 - pH;
+  // Probability remisu: estymowana jako funkcja niepewności
+  const drawBase = 0.27 * (1 - Math.abs(pH - 0.5) * 1.5);
+  const drawCorrected = Math.max(0.18, Math.min(0.34, drawBase));
+  const t = pH + pA;
+  return {
+    home: pH * (1 - drawCorrected),
+    draw: drawCorrected,
+    away: pA * (1 - drawCorrected)
+  };
+}
+
 // ── PI-RATING (Constantinou 2013) ─────────────────────────────────────────────
 function piRatingFromMatches(matches, teamId, leagueCode) {
   let phi = 0;
@@ -338,9 +424,10 @@ async function fetchTeamStats(teamId, compCode, token, onStatus, label) {
   }
   const yellowRisk=Object.entries(yellowCount).filter(([,v])=>v>=2).map(([k,v])=>({name:k,count:v}));
 
-  // Pi-rating and ELO from match history
+  // Pi-rating, ELO, Glicko-2 from match history
   const piRating = piRatingFromMatches(last10, teamId, compCode);
   const eloRating = eloFromMatches(last10, teamId);
+  const glickoRating = glicko2FromMatches(last10, teamId);
 
   // First half goals ratio from halfTime scores
   let h1sc=0, h1tot=0;
@@ -356,7 +443,7 @@ async function fetchTeamStats(teamId, compCode, token, onStatus, label) {
 
   return { form, formScore, avgScored, avgConceded,
            avgScoredH, avgConcededH, avgScoredA, avgConcededA,
-           suspended, yellowRisk, piRating, eloRating, h1ratio };
+           suspended, yellowRisk, piRating, eloRating, glickoRating, h1ratio };
 }
 
 async function fetchStandings(compCode, homeId, awayId, token, onStatus) {
@@ -642,28 +729,38 @@ function App(){
       const lH = Math.max(0.3,Math.min(4.5, (hAs/L)*(aAc/L)*L*H*(0.85+hF*0.30)*hSusPenalty*hFatigue*piCorr));
       const lA = Math.max(0.3,Math.min(4.5, (aAs/L)*(hAc/L)*L  *(0.85+aF*0.30)*aSusPenalty*aFatigue/Math.max(0.80,piCorr)));
 
-      // ELO
+      // ELO + Glicko-2 ratings
       const hElo = hStats.eloRating ?? 1500;
       const aElo = aStats.eloRating ?? 1500;
       const eloP = eloToProbs(hElo, aElo);
 
-      // Blend Poisson (70%) + ELO (30%)
+      const hGlicko = hStats.glickoRating || {rating:1500,rd:200,volatility:0.06};
+      const aGlicko = aStats.glickoRating || {rating:1500,rd:200,volatility:0.06};
+      const glickoP = glicko2ToProbs(hGlicko, aGlicko, 80);
+
+      // Raw Poisson + Zero-inflated draw correction per liga (Karlis-Ntzoufras)
       const rawProbs = calcProbs(lH,lA);
-      // Zero-inflated draw correction per liga (Karlis-Ntzoufras)
       const gamma = getDrawGamma(lg?.code);
-      const drawBoost = 1 + gamma;
       const drawAdjusted = {
         home: rawProbs.home * (1 - gamma * 0.5),
-        draw: rawProbs.draw * drawBoost,
+        draw: rawProbs.draw * (1 + gamma),
         away: rawProbs.away * (1 - gamma * 0.5),
       };
       const tNorm = drawAdjusted.home + drawAdjusted.draw + drawAdjusted.away || 1;
-      const correctedProbs = {
-        home: Math.round(drawAdjusted.home / tNorm * 1000) / 10,
-        draw: Math.round(drawAdjusted.draw / tNorm * 1000) / 10,
-        away: Math.round(drawAdjusted.away / tNorm * 1000) / 10,
+      const poissonProbs = {
+        home: drawAdjusted.home / tNorm * 100,
+        draw: drawAdjusted.draw / tNorm * 100,
+        away: drawAdjusted.away / tNorm * 100,
       };
-      const probs   = blendProbs(correctedProbs, eloP);
+
+      // ENSEMBLE: 50% Poisson + 25% ELO + 25% Glicko-2 (literatura: optymalne wagi)
+      const wP=0.50, wE=0.25, wG=0.25;
+      const probs = {
+        home: Math.round((poissonProbs.home*wP + eloP.home*100*wE + glickoP.home*100*wG)*10)/10,
+        draw: Math.round((poissonProbs.draw*wP + eloP.draw*100*wE + glickoP.draw*100*wG)*10)/10,
+        away: Math.round((poissonProbs.away*wP + eloP.away*100*wE + glickoP.away*100*wG)*10)/10,
+      };
+
       const markets = calcMarkets(lH,lA);
       const scores  = topScores(lH,lA);
 
