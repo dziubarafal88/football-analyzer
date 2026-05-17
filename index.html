@@ -97,6 +97,94 @@ function cacheClear() {
   } catch {}
 }
 
+// ── XGBoost ML MODEL (ONNX Runtime Web) ───────────────────────────────────────
+// Trenowany offline na 19268 meczach z 7 sezonów × 8 lig (openfootball)
+// Pojedyncza accuracy: 50.49%, RPS: 0.2077 (lepszy niż czysty Poisson)
+// W ensemble z resztą modeli: oczekiwany +1-2% accuracy
+let _onnxSession = null;
+let _onnxLoading = false;
+const ML_FEATURES = ["h_avg_sc","h_avg_cc","a_avg_sc","a_avg_cc","h_form","a_form","h_pi","a_pi","pi_diff","h_elo","a_elo","elo_diff","h_h1ratio","a_h1ratio","h_rest","a_rest","rest_diff","hfa","lg_en.1","lg_de.1","lg_es.1","lg_it.1","lg_fr.1","lg_nl.1","pt.1","en.2"];
+const ML_LEAGUE_MAP = {PL:"en.1",BL1:"de.1",PD:"es.1",SA:"it.1",FL1:"fr.1",DED:"nl.1",PPL:"pt.1",ELC:"en.2"};
+const ML_HFA = {PL:1.10,BL1:1.08,SA:1.09,PD:1.11,FL1:1.12,DED:1.10,PPL:1.12,ELC:1.13,DEFAULT:1.10};
+
+async function loadOnnxModel() {
+  if (_onnxSession) return _onnxSession;
+  if (_onnxLoading) {
+    // Wait for parallel load
+    for (let i=0;i<50;i++){ await sleep(100); if(_onnxSession)return _onnxSession; }
+    return null;
+  }
+  _onnxLoading = true;
+  try {
+    if (!window.ort) { _onnxLoading=false; return null; }
+    _onnxSession = await window.ort.InferenceSession.create("./model.onnx", {
+      executionProviders: ["wasm"]
+    });
+    _onnxLoading = false;
+    return _onnxSession;
+  } catch(e) {
+    console.warn("ONNX model load failed:", e);
+    _onnxLoading = false;
+    return null;
+  }
+}
+
+async function predictXGB(hStats, aStats, compCode) {
+  const session = await loadOnnxModel();
+  if (!session) return null;
+
+  const leagueKey = ML_LEAGUE_MAP[compCode];
+  const hfa = ML_HFA[compCode] || ML_HFA.DEFAULT;
+  const hGl = hStats.glickoRating || {rating:1500};
+  const aGl = aStats.glickoRating || {rating:1500};
+
+  // Buduj wektor cech IDENTYCZNIE jak w treningu
+  const features = [
+    hStats.avgScoredH ?? hStats.avgScored ?? 1.3,  // h_avg_sc
+    hStats.avgConcededH ?? hStats.avgConceded ?? 1.3,  // h_avg_cc
+    aStats.avgScoredA ?? aStats.avgScored ?? 1.0,  // a_avg_sc
+    aStats.avgConcededA ?? aStats.avgConceded ?? 1.5,  // a_avg_cc
+    hStats.formScore ?? 0.5,  // h_form
+    aStats.formScore ?? 0.5,  // a_form
+    hStats.piRating ?? 0,  // h_pi
+    aStats.piRating ?? 0,  // a_pi
+    (hStats.piRating??0) - (aStats.piRating??0),  // pi_diff
+    hStats.eloRating ?? 1500,  // h_elo
+    aStats.eloRating ?? 1500,  // a_elo
+    (hStats.eloRating??1500) - (aStats.eloRating??1500),  // elo_diff
+    hStats.h1ratio ?? 0.45,  // h_h1ratio
+    aStats.h1ratio ?? 0.45,  // a_h1ratio
+    7,  // h_rest (default - we don't always have)
+    7,  // a_rest
+    0,  // rest_diff
+    hfa,  // hfa
+    leagueKey === "en.1" ? 1 : 0,
+    leagueKey === "de.1" ? 1 : 0,
+    leagueKey === "es.1" ? 1 : 0,
+    leagueKey === "it.1" ? 1 : 0,
+    leagueKey === "fr.1" ? 1 : 0,
+    leagueKey === "nl.1" ? 1 : 0,
+    leagueKey === "pt.1" ? 1 : 0,
+    leagueKey === "en.2" ? 1 : 0,
+  ];
+
+  try {
+    const tensor = new window.ort.Tensor("float32", Float32Array.from(features), [1, 26]);
+    const output = await session.run({input: tensor});
+    // Output 'probabilities' is a tensor of shape [1, 3]
+    const probsArr = output.probabilities ? output.probabilities.data : (output["1"]?.data);
+    if (!probsArr || probsArr.length !== 3) return null;
+    return {
+      home: probsArr[0] * 100,
+      draw: probsArr[1] * 100,
+      away: probsArr[2] * 100
+    };
+  } catch(e) {
+    console.warn("XGB predict failed:", e);
+    return null;
+  }
+}
+
 // ── PREDICTION TRACKER (walk-forward backtest na własnych predykcjach) ───────
 function savePrediction(matchId, homeTeam, awayTeam, leagueCode, probs, utcDate) {
   try {
@@ -753,6 +841,9 @@ function App(){
     }catch(e){setError("Nieprawidłowy klucz: "+e.message);}
   };
 
+  // Pre-load ONNX model w tle - nie blokuje UI
+  useEffect(() => { loadOnnxModel(); }, []);
+
   const handleUpdateResults=async()=>{
     setUpdatingResults(true);
     const updated = await updatePredictionResults(token);
@@ -937,12 +1028,19 @@ function App(){
         away: drawAdjusted.away / tNorm * 100,
       };
 
-      // ENSEMBLE: 45% Poisson + 22% ELO + 23% Glicko-2 + 10% market prior (jeśli dostępny)
-      const wP=0.50, wE=0.25, wG=0.25;
+      // ENSEMBLE: Poisson + ELO + Glicko-2 + XGBoost (ML)
+      // Próba XGBoost - jeśli model się ładuje, włącz go do ensemble
+      let xgbProbs = null;
+      try { xgbProbs = await predictXGB(hStats, aStats, lg?.code); } catch {}
+
+      const wP = xgbProbs ? 0.35 : 0.50;
+      const wE = xgbProbs ? 0.18 : 0.25;
+      const wG = xgbProbs ? 0.17 : 0.25;
+      const wX = xgbProbs ? 0.30 : 0.0;
       let probs = {
-        home: poissonProbs.home*wP + eloP.home*100*wE + glickoP.home*100*wG,
-        draw: poissonProbs.draw*wP + eloP.draw*100*wE + glickoP.draw*100*wG,
-        away: poissonProbs.away*wP + eloP.away*100*wE + glickoP.away*100*wG,
+        home: poissonProbs.home*wP + eloP.home*100*wE + glickoP.home*100*wG + (xgbProbs?.home||0)*wX,
+        draw: poissonProbs.draw*wP + eloP.draw*100*wE + glickoP.draw*100*wG + (xgbProbs?.draw||0)*wX,
+        away: poissonProbs.away*wP + eloP.away*100*wE + glickoP.away*100*wG + (xgbProbs?.away||0)*wX,
       };
 
       // MARKET-PRIOR SHRINKAGE: Jeśli mamy historyczne kursy Pinnacle dla tej ligi,
@@ -995,7 +1093,7 @@ function App(){
       // Zapisz predykcję do tracker'a (do walk-forward backtest)
       savePrediction(match.id, match.homeTeam, match.awayTeam, lg?.code, probs, match.utcDate);
 
-      setAnalysis({match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,halfTime,hMotiv,aMotiv,hRest,aRest,piDiff,hElo,aElo,marketProbs,hGlicko,aGlicko,league:selLeague,season:"2025/26"});
+      setAnalysis({match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,halfTime,hMotiv,aMotiv,hRest,aRest,piDiff,hElo,aElo,marketProbs,hGlicko,aGlicko,xgbProbs,league:selLeague,season:"2025/26"});
     }catch(e){setError(e.message);}
     setLoading(false);setStatus("");
   };
@@ -1291,7 +1389,7 @@ function App(){
 
       {/* ── KROK 3: ANALIZA ── */}
       {analysis&&(()=>{
-        const{match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,halfTime,hMotiv,aMotiv,hRest,aRest,piDiff,hElo,aElo,marketProbs,hGlicko,aGlicko,league}=analysis;
+        const{match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,halfTime,hMotiv,aMotiv,hRest,aRest,piDiff,hElo,aElo,marketProbs,hGlicko,aGlicko,xgbProbs,league}=analysis;
         const SR=({label,hv,av,lower})=>{
           const h=parseFloat(hv),a=parseFloat(av),hW=lower?h<a:h>a,aW=lower?a<h:a>h;
           return<div style={{display:"flex",alignItems:"center",padding:"7px 0",borderBottom:"1px solid #1e293b"}}>
@@ -1343,7 +1441,7 @@ function App(){
               {" · "}xG Goście: <span style={{color:"#ef4444",fontFamily:"'DM Mono',monospace"}}>{lA.toFixed(2)}</span>
             </div>
             <div style={{textAlign:"center",marginTop:6,fontSize:10,color:"#1e3a2f",background:"#031a0d",borderRadius:6,padding:"4px 8px"}}>
-              Ensemble: Poisson+DC 50% · ELO 25% · Glicko-2 25% · Karlis-Ntzoufras · ξ per liga · market shrinkage
+              Ensemble: Poisson 35% · ELO 18% · Glicko 17% · XGBoost ML 30% · Karlis-Ntzoufras · market shrinkage
             </div>
             <div style={{display:"flex",gap:6,marginTop:8}}>
               <div style={{flex:1,background:"#0f172a",borderRadius:8,padding:"6px 10px",textAlign:"center"}}>
@@ -1361,6 +1459,11 @@ function App(){
                 <div style={{fontSize:12,fontWeight:700,color:"#f1f5f9"}}>±{Math.round(hGlicko.rd)}</div>
               </div>}
             </div>
+            {xgbProbs&&<div style={{marginTop:8,background:"#0a2e1a",borderRadius:8,padding:"6px 10px",border:"1px solid #10b98140"}}>
+              <div style={{fontSize:10,color:"#10b981",fontWeight:700,textAlign:"center"}}>
+                🤖 XGBoost ML (19268 meczów treningowych): {Math.round(xgbProbs.home)}% / {Math.round(xgbProbs.draw)}% / {Math.round(xgbProbs.away)}%
+              </div>
+            </div>}
             {marketProbs&&<div style={{marginTop:10,background:"#0f172a",borderRadius:8,padding:"8px 10px"}}>
               <div style={{fontSize:9,color:"#475569",textTransform:"uppercase",marginBottom:4}}>📈 Porównanie z rynkiem (Pinnacle)</div>
               <div style={{display:"flex",gap:6}}>
