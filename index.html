@@ -19,71 +19,6 @@ select option{background:#1e293b;color:#f1f5f9}
 <script type="text/babel">
 const {useState,useMemo,useRef,useEffect}=React;
 
-// ─── DODATKOWE RYNKI BUKMACHERSKIE ──────────────────────────────────────────
-// Over/Under 2.5, BTTS, Top wyniki — kluczowe dla precyzji typowania
-
-function calcMarkets(lH, lA, max=9) {
-  let under=0,over=0,btts=0,nobtts=0;
-  for(let h=0;h<=max;h++) for(let a=0;a<=max;a++){
-    const p=Math.max(0, pmf(lH,h)*pmf(lA,a)*dcCorr(h,a,lH,lA));
-    if(h+a<3)under+=p; else over+=p;
-    if(h>0&&a>0)btts+=p; else nobtts+=p;
-  }
-  const t1=under+over||1, t2=btts+nobtts||1;
-  return{
-    under25:Math.round(under/t1*1000)/10,
-    over25: Math.round(over/t1*1000)/10,
-    btts:   Math.round(btts/t2*1000)/10,
-    nobtts: Math.round(nobtts/t2*1000)/10,
-  };
-}
-
-function topScores(lH, lA, n=6) {
-  const arr=[];
-  for(let h=0;h<=5;h++) for(let a=0;a<=5;a++){
-    arr.push({s:`${h}:${a}`, p:Math.max(0,pmf(lH,h)*pmf(lA,a)*dcCorr(h,a,lH,lA))});
-  }
-  return arr.sort((a,b)=>b.p-a.p).slice(0,n).map(x=>({...x,p:Math.round(x.p*1000)/10}));
-}
-
-function getMotivation(pos, total) {
-  if(!pos||!total) return null;
-  const bot3 = pos > total-3;
-  const top4  = pos <= 4;
-  const top6  = pos <= 6;
-  if(pos===1) return {label:"🏆 Walka o mistrzostwo",color:"#f59e0b",impact:"high"};
-  if(pos<=3)  return {label:"🥇 Top 3 — tytuł w zasięgu",color:"#f59e0b",impact:"high"};
-  if(top4)    return {label:"⭐ Walka o Ligę Mistrzów",color:"#6366f1",impact:"high"};
-  if(top6)    return {label:"🇪🇺 Walka o puchary europejskie",color:"#3b82f6",impact:"med"};
-  if(bot3)    return {label:"🔴 STREFA SPADKOWA — desperacja",color:"#ef4444",impact:"high"};
-  if(pos>total-6) return {label:"⚠️ Walka o utrzymanie",color:"#f97316",impact:"med"};
-  return {label:"😐 Środek tabeli — niska motywacja",color:"#64748b",impact:"low"};
-}
-
-// ─── FOOTBALL-DATA.ORG API ───────────────────────────────────────────────────
-const BASE = "https://api.football-data.org/v4";
-const PROXY = "https://corsproxy.io/?";
-
-async function fdGet(path, token) {
-  const url = encodeURIComponent(`${BASE}/${path}`);
-  const res = await fetch(`${PROXY}${url}`, { headers: { "X-Auth-Token": token } });
-  if (!res.ok) { const j = await res.json().catch(()=>({})); throw new Error(j.message||`HTTP ${res.status}`); }
-  return res.json();
-}
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-
-// ─── DODATKOWE RYNKI BUKMACHERSKIE ──────────────────────────────────────────
-// Over/Under 2.5, BTTS, Top wyniki — kluczowe dla precyzji typowania
-
-
-
-
-// ─── FOOTBALL-DATA.ORG API ───────────────────────────────────────────────────
-const BASE = "https://api.football-data.org/v4";
-const PROXY = "https://corsproxy.io/?";
-
-
 
 // ─── ULEPSZONY MODEL POISSONA + DIXON-COLES ──────────────────────────────────
 // Źródła: Dixon & Coles (1997), Maher (1982), StatsUltra, ExPrysm methodology
@@ -225,6 +160,72 @@ function calcHalfTimeProbs(lH_full, lA_full, hH1ratio, aH1ratio) {
     topScores: top1h,
   };
 }
+
+// ─── DODATKOWE RYNKI BUKMACHERSKIE ──────────────────────────────────────────
+// Over/Under 2.5, BTTS, Top wyniki — kluczowe dla precyzji typowania
+
+function calcMarkets(lH, lA, max=9) {
+  let under=0,over=0,btts=0,nobtts=0;
+  for(let h=0;h<=max;h++) for(let a=0;a<=max;a++){
+    const p=Math.max(0, pmf(lH,h)*pmf(lA,a)*dcCorr(h,a,lH,lA));
+    if(h+a<3)under+=p; else over+=p;
+    if(h>0&&a>0)btts+=p; else nobtts+=p;
+  }
+  const t1=under+over||1, t2=btts+nobtts||1;
+  return{
+    under25:Math.round(under/t1*1000)/10,
+    over25: Math.round(over/t1*1000)/10,
+    btts:   Math.round(btts/t2*1000)/10,
+    nobtts: Math.round(nobtts/t2*1000)/10,
+  };
+}
+
+function topScores(lH, lA, n=6) {
+  const arr=[];
+  for(let h=0;h<=5;h++) for(let a=0;a<=5;a++){
+    arr.push({s:`${h}:${a}`, p:Math.max(0,pmf(lH,h)*pmf(lA,a)*dcCorr(h,a,lH,lA))});
+  }
+  return arr.sort((a,b)=>b.p-a.p).slice(0,n).map(x=>({...x,p:Math.round(x.p*1000)/10}));
+}
+
+function getMotivation(pos, total) {
+  if(!pos||!total) return null;
+  const bot3 = pos > total-3;
+  const top4  = pos <= 4;
+  const top6  = pos <= 6;
+  if(pos===1) return {label:"🏆 Walka o mistrzostwo",color:"#f59e0b",impact:"high"};
+  if(pos<=3)  return {label:"🥇 Top 3 — tytuł w zasięgu",color:"#f59e0b",impact:"high"};
+  if(top4)    return {label:"⭐ Walka o Ligę Mistrzów",color:"#6366f1",impact:"high"};
+  if(top6)    return {label:"🇪🇺 Walka o puchary europejskie",color:"#3b82f6",impact:"med"};
+  if(bot3)    return {label:"🔴 STREFA SPADKOWA — desperacja",color:"#ef4444",impact:"high"};
+  if(pos>total-6) return {label:"⚠️ Walka o utrzymanie",color:"#f97316",impact:"med"};
+  return {label:"😐 Środek tabeli — niska motywacja",color:"#64748b",impact:"low"};
+}
+
+// ─── FOOTBALL-DATA.ORG API ───────────────────────────────────────────────────
+const BASE = "https://api.football-data.org/v4";
+const PROXY = "https://corsproxy.io/?";
+
+async function fdGet(path, token) {
+  const url = encodeURIComponent(`${BASE}/${path}`);
+  const res = await fetch(`${PROXY}${url}`, { headers: { "X-Auth-Token": token } });
+  if (!res.ok) { const j = await res.json().catch(()=>({})); throw new Error(j.message||`HTTP ${res.status}`); }
+  return res.json();
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+
+// ─── DODATKOWE RYNKI BUKMACHERSKIE ──────────────────────────────────────────
+// Over/Under 2.5, BTTS, Top wyniki — kluczowe dla precyzji typowania
+
+
+
+
+// ─── FOOTBALL-DATA.ORG API ───────────────────────────────────────────────────
+const BASE = "https://api.football-data.org/v4";
+const PROXY = "https://corsproxy.io/?";
+
+
 
 // Pobierz wszystkie mecze danego dnia
 async function fetchDayMatches(dateStr, token, onStatus) {
