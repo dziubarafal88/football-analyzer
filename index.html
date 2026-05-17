@@ -72,6 +72,60 @@ async function fdGet(path, token) {
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+
+// ─── DODATKOWE RYNKI BUKMACHERSKIE ──────────────────────────────────────────
+// Over/Under 2.5, BTTS, Top wyniki — kluczowe dla precyzji typowania
+
+function calcMarkets(lH, lA, max=9) {
+  let under=0,over=0,btts=0,nobtts=0;
+  for(let h=0;h<=max;h++) for(let a=0;a<=max;a++){
+    const p=Math.max(0, pmf(lH,h)*pmf(lA,a)*dcCorr(h,a,lH,lA));
+    if(h+a<3)under+=p; else over+=p;
+    if(h>0&&a>0)btts+=p; else nobtts+=p;
+  }
+  const t1=under+over||1, t2=btts+nobtts||1;
+  return{
+    under25:Math.round(under/t1*1000)/10,
+    over25: Math.round(over/t1*1000)/10,
+    btts:   Math.round(btts/t2*1000)/10,
+    nobtts: Math.round(nobtts/t2*1000)/10,
+  };
+}
+
+function topScores(lH, lA, n=6) {
+  const arr=[];
+  for(let h=0;h<=5;h++) for(let a=0;a<=5;a++){
+    arr.push({s:`${h}:${a}`, p:Math.max(0,pmf(lH,h)*pmf(lA,a)*dcCorr(h,a,lH,lA))});
+  }
+  return arr.sort((a,b)=>b.p-a.p).slice(0,n).map(x=>({...x,p:Math.round(x.p*1000)/10}));
+}
+
+function getMotivation(pos, total) {
+  if(!pos||!total) return null;
+  const bot3 = pos > total-3;
+  const top4  = pos <= 4;
+  const top6  = pos <= 6;
+  if(pos===1) return {label:"🏆 Walka o mistrzostwo",color:"#f59e0b",impact:"high"};
+  if(pos<=3)  return {label:"🥇 Top 3 — tytuł w zasięgu",color:"#f59e0b",impact:"high"};
+  if(top4)    return {label:"⭐ Walka o Ligę Mistrzów",color:"#6366f1",impact:"high"};
+  if(top6)    return {label:"🇪🇺 Walka o puchary europejskie",color:"#3b82f6",impact:"med"};
+  if(bot3)    return {label:"🔴 STREFA SPADKOWA — desperacja",color:"#ef4444",impact:"high"};
+  if(pos>total-6) return {label:"⚠️ Walka o utrzymanie",color:"#f97316",impact:"med"};
+  return {label:"😐 Środek tabeli — niska motywacja",color:"#64748b",impact:"low"};
+}
+
+// ─── FOOTBALL-DATA.ORG API ───────────────────────────────────────────────────
+const BASE = "https://api.football-data.org/v4";
+const PROXY = "https://corsproxy.io/?";
+
+async function fdGet(path, token) {
+  const url = encodeURIComponent(`${BASE}/${path}`);
+  const res = await fetch(`${PROXY}${url}`, { headers: { "X-Auth-Token": token } });
+  if (!res.ok) { const j = await res.json().catch(()=>({})); throw new Error(j.message||`HTTP ${res.status}`); }
+  return res.json();
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 // ─── ALLSPORTSAPI — TENIS ────────────────────────────────────────────────────
 const TENNIS_BASE = "https://apiv2.allsportsapi.com/tennis/";
 
@@ -81,265 +135,9 @@ async function tennisGet(params, apiKey) {
   const res = await fetch(`${PROXY}${url}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const d = await res.json();
-  if (!d.success) throw new Error(d.error || "AllSportsAPI error");
   return d.result || [];
 }
 
-async function fetchTennisDay(dateStr, apiKey, onStatus) {
-  onStatus("🎾 Pobieram mecze tenisowe...");
-  const data = await tennisGet({met:"Fixtures", from:dateStr, to:dateStr}, apiKey);
-  // Group by tournament
-  const groups = {};
-  (data||[]).forEach(m => {
-    const key = m.league_name || "Inne";
-    if (!groups[key]) groups[key] = {name:key, matches:[]};
-    groups[key].matches.push({
-      id: m.event_key,
-      p1: m.event_first_player, p1Id: m.first_player_key,
-      p2: m.event_second_player, p2Id: m.second_player_key,
-      p1Rank: parseInt(m.event_first_player_ranking)||null,
-      p2Rank: parseInt(m.event_second_player_ranking)||null,
-      p1Seed: parseInt(m.event_first_player_seed)||null,
-      p2Seed: parseInt(m.event_second_player_seed)||null,
-      time: m.event_time || "TBD",
-      status: m.event_status,
-      score: m.event_game_result || "",
-      surface: m.event_ground || null,
-      league: m.league_name, leagueId: m.league_key,
-      round: m.league_round || "",
-    });
-  });
-  return Object.values(groups);
-}
-
-
-// ── STATYCZNA TABELA RANKINGÓW ATP/WTA (maj 2026) ────────────────────────────
-// Tylko zweryfikowane rankingi ATP i WTA. ITF nie uwzględniony — seeding z fixtures.
-const STATIC_RANKS = {
-  // ── ATP top 100 ──
-  "sinner":1,"alcaraz":2,"zverev":3,"djokovic":4,"medvedev":5,
-  "fritz":6,"ruud":7,"hurkacz":8,"de minaur":9,"rune":10,
-  "musetti":11,"paul":12,"rublev":13,"dimitrov":14,"draper":15,
-  "korda":16,"shelton":17,"bublik":18,"mensik":19,"fils":20,
-  "auger-aliassime":21,"tiafoe":22,"cerundolo":23,"lehecka":24,"baez":25,
-  "machac":26,"mpetshi perricard":27,"tabilo":28,"struff":29,"fearnley":30,
-  "cobolli":31,"norrie":32,"borges":33,"kotov":34,"griekspoor":35,
-  "nakashima":36,"coric":37,"etcheverry":38,"rinderknech":39,"giron":40,
-  "halys":41,"safiullin":42,"navone":43,"arnaldi":44,"fokina":45,
-  "altmaier":46,"duckworth":47,"vukic":48,"michelsen":49,"seyboth wild":50,
-  "kokkinakis":51,"galan":52,"monfils":53,"o'connell":54,"brancaccio":55,
-  "tabur":56,"basavareddy":57,"schoolkate":58,"atmane":59,"mmoh":60,
-  "monteiro":61,"lajovic":62,"ofner":63,"carballes baena":64,"cecchinato":65,
-  "thiem":66,"cazaux":67,"varillas":68,"ymer":69,"rodriguez":70,
-  "nishioka":71,"mayot":72,"harris":73,"goffin":74,"kubler":75,
-  "mager":76,"berankis":77,"diallo":78,"brooksby":79,"skatov":80,
-  "muller":81,"hanfmann":82,"cressy":83,"wawrinka":84,"schwartzman":85,
-  "sousa":86,"bellier":87,"bellucci":88,"comesana":89,"nishikori":90,
-  "andreev":91,"martin":92,"khachanov":93,"kwon":94,"johnson":95,
-  "rehberg":96,"feldbausch":97,"choinski":98,
-  // ── WTA top 100 ──
-  "swiatek":1,"sabalenka":2,"gauff":3,"rybakina":4,"pegula":5,
-  "paolini":6,"navarro":7,"keys":8,"muchova":9,"kasatkina":10,
-  "haddad maia":11,"jabeur":12,"ostapenko":13,"alexandrova":14,"potapova":15,
-  "samsonova":16,"andreescu":17,"frech":18,"vondrousova":19,"garcia":20,
-  "fernandez":21,"tomova":22,"krejcikova":23,"bencic":24,"tauson":25,
-  "sherif":26,"bucsa":27,"linette":28,"anisimova":29,"siegemund":30,
-  "vekic":31,"minnen":32,"pera":33,"niemeier":34,"cirstea":35,
-  "grabher":36,"siniakova":37,"sorribes tormo":38,"bolsova":39,"pigossi":40,
-  "kvitova":41,"azarenka":42,"halep":43,"kontaveit":44,"pliskova":45,
-  "kerber":46,"pavlyuchenkova":47,"stephens":48,"mchale":49,"doi":50,
-  "gleason":51,"jacquemot":52,"milovanovic":53,"ansari":54,"schoenhaus":55,
-  "quinn":56,"moratelli":57,"cristian":58,"zavatska":59,"kucova":60,
-};
-
-function getStaticRank(name) {
-  if(!name) return null;
-  const clean = name.toLowerCase()
-    .replace(/^[a-z]\.\s*/,"")  // usuń inicjał "S. "
-    .replace(/[^a-z\s-]/g,"")
-    .trim();
-  // Sprawdź po samym nazwisku
-  const parts = clean.split(/\s+/);
-  for(let i=parts.length-1;i>=0;i--){
-    if(STATIC_RANKS[parts[i]]) return STATIC_RANKS[parts[i]];
-  }
-  // Sprawdź pełne imię i nazwisko
-  if(STATIC_RANKS[clean]) return STATIC_RANKS[clean];
-  // Sprawdź częściowe dopasowanie
-  const found = Object.keys(STATIC_RANKS).find(k=>clean.includes(k)||k.includes(parts[parts.length-1]));
-  return found ? STATIC_RANKS[found] : null;
-}
-
-async function buildRankMap(apiKey) {
-  // Sprawdź cache localStorage (7 dni)
-  try {
-    const cached = localStorage.getItem("tennis_ranks");
-    const cachedTime = localStorage.getItem("tennis_ranks_time");
-    if(cached && cachedTime && Date.now()-parseInt(cachedTime) < 7*86400000) {
-      const map = JSON.parse(cached);
-      console.log("Rankings from cache:", Object.keys(map).length, "players");
-      return map;
-    }
-  } catch {}
-
-  // Pobierz rankingi ze wszystkich kategorii
-  const types = ["ATP","WTA","ITF_M","ITF_W","Doubles_ATP","Doubles_WTA"];
-  const results = await Promise.allSettled(
-    types.map(t=>tennisGet({met:"Rankings",RankingType:t},apiKey).catch(()=>[]))
-  );
-  const all = results.flatMap(r=>r.status==="fulfilled"?(r.value||[]):[]);
-
-  // Debug: pokaż pierwszego gracza żeby zobaczyć strukturę
-  const sample = all.length>0 ? JSON.stringify(all[0]) : "PUSTA ODPOWIEDŹ";
-  // Zapisz do widocznego stanu zamiast console
-
-  const map = {};
-  all.forEach(p=>{
-    // Próbuj WSZYSTKIE możliwe pola z nazwiskiem i rankingiem
-    const full = (
-      p.player_name||p.ranking_player||p.name||p.player_fullname||
-      p.firstname&&p.lastname?(p.firstname+" "+p.lastname):""
-    ).trim();
-    const rank = parseInt(
-      p.player_rank||p.ranking_rank||p.rank||p.current_rank||
-      p.singles_rank||p.atp_rank||p.wta_rank||p.ranking||0
-    );
-    if(!full||!rank) return;
-
-    const lower = full.toLowerCase();
-    if(!map[lower]||rank<map[lower]) map[lower]=rank;
-
-    const parts = full.split(/\s+/).filter(Boolean);
-    if(parts.length>=2){
-      const last = parts[parts.length-1].toLowerCase();
-      if(!map[last]||rank<map[last]) map[last]=rank;
-      // "F. Lastname"
-      const abbr=(parts[0][0]+". "+parts.slice(1).join(" ")).toLowerCase();
-      if(!map[abbr]||rank<map[abbr]) map[abbr]=rank;
-    }
-  });
-
-  // Zapisz do cache
-  try {
-    localStorage.setItem("tennis_ranks", JSON.stringify(map));
-    localStorage.setItem("tennis_ranks_time", String(Date.now()));
-  } catch {}
-
-  console.log("Rankings loaded:", Object.keys(map).length, "players");
-  return map;
-}
-
-function findRank(name, rankMap) {
-  if(!name||!rankMap) return null;
-  const clean=s=>s.toLowerCase().replace(/[^a-z .]/g,"").trim();
-  const n=clean(name);
-  if(rankMap[n]) return rankMap[n];
-  // Spróbuj samo nazwisko
-  const parts=n.split(/[\s/]+/).filter(Boolean);
-  for(let i=parts.length-1;i>=0;i--){
-    const p=parts[i].replace(/\./g,"");
-    if(p.length>2&&rankMap[p]) return rankMap[p];
-  }
-  // Partial: szukaj klucza zawierającego nazwisko
-  const lastname=parts[parts.length-1].replace(/\./g,"");
-  if(lastname.length>2){
-    const found=Object.keys(rankMap).find(k=>{
-      const kparts=k.split(" ");
-      return kparts[kparts.length-1]===lastname||k.includes(lastname);
-    });
-    if(found) return rankMap[found];
-  }
-  return null;
-}
-
-async function fetchTennisH2H(p1Id, p2Id, apiKey, onStatus) {
-  onStatus("🔄 Pobieranie H2H...");
-  await sleep(600);
-  try {
-    const data = await tennisGet({met:"H2H", firstPlayerId:p1Id, secondPlayerId:p2Id}, apiKey);
-    return data || [];
-  } catch { return []; }
-}
-
-async function fetchTennisPlayer(playerId, apiKey, onStatus, label) {
-  onStatus(`📊 Statystyki: ${label}...`);
-  await sleep(600);
-  try {
-    const data = await tennisGet({met:"Players", playerId}, apiKey);
-    const info = Array.isArray(data) ? data[0] : (data || null);
-    return info;
-  } catch { return null; }
-}
-
-async function fetchTennisRecentMatches(playerId, apiKey, onStatus, label) {
-  onStatus(`📈 Forma: ${label}...`);
-  await sleep(600);
-  try {
-    // Last matches for player
-    const today = new Date().toISOString().split("T")[0];
-    const from = new Date(Date.now()-90*86400000).toISOString().split("T")[0];
-    const data = await tennisGet({met:"Fixtures", playerId, from, to:today}, apiKey);
-    return (Array.isArray(data)?data:[]).filter(m=>m.event_winner);
-  } catch { return []; }
-}
-
-// ── ZAAWANSOWANY MODEL TENISOWY ─────────────────────────────────────────────
-// Bradley-Terry + ranking log-odds + win% + forma + H2H + nawierzchnia
-
-function calcTennisRecentForm(matches, playerId, surface) {
-  if(!matches||matches.length===0) return {overall:0.5, surface:0.5, count:0, surfCount:0};
-  const last10=matches.slice(-10);
-  const wins=last10.filter(m=>{
-    const isP1=m.first_player_key==playerId||m.event_first_player_key==playerId;
-    return(isP1&&m.event_winner_code==="1")||(!isP1&&m.event_winner_code==="2");
-  }).length;
-  const overall=last10.length>0?wins/last10.length:0.5;
-  // Forma na nawierzchni
-  const surfMatches=surface?last10.filter(m=>(m.event_ground||"").toLowerCase()===surface.toLowerCase()):[];
-  const surfWins=surfMatches.filter(m=>{
-    const isP1=m.first_player_key==playerId||m.event_first_player_key==playerId;
-    return(isP1&&m.event_winner_code==="1")||(!isP1&&m.event_winner_code==="2");
-  }).length;
-  const surfForm=surfMatches.length>=3?surfWins/surfMatches.length:overall;
-  return{overall,surface:surfForm,count:last10.length,surfCount:surfMatches.length};
-}
-
-function tennisProbs(params) {
-  const{p1Rank,p2Rank,p1WinPct,p2WinPct,p1Form,p2Form,p1H2H,h2hTotal,surface}=params;
-  const r1=p1Rank||200, r2=p2Rank||200;
-
-  // 1. Ranking (Bradley-Terry, 35% wagi)
-  const rankBase = r2/(r1+r2);
-
-  // 2. Win % ogólny (15% wagi)
-  const w1=p1WinPct||0.5, w2=p2WinPct||0.5;
-  const winAdj=(w1-w2)*0.15;
-
-  // 3. Forma ostatnie 10 meczów (20% wagi)
-  const f1=(p1Form?.overall)||0.5, f2=(p2Form?.overall)||0.5;
-  const formAdj=(f1-f2)*0.20;
-
-  // 4. Forma na nawierzchni (10% wagi)
-  const s1=(p1Form?.surface)||f1, s2=(p2Form?.surface)||f2;
-  const surfAdj=surface?(s1-s2)*0.10:0;
-
-  // 5. H2H (20% wagi)
-  const h2hAdj=h2hTotal>=3?((p1H2H/h2hTotal)-0.5)*0.20:0;
-
-  const p1=Math.max(0.05,Math.min(0.95,rankBase+winAdj+formAdj+surfAdj+h2hAdj));
-
-  return{
-    p1:Math.round(p1*1000)/10,
-    p2:Math.round((1-p1)*1000)/10,
-    factors:{
-      ranking: Math.round(rankBase*1000)/10,
-      winPct:  Math.round((0.5+winAdj)*1000)/10,
-      form:    Math.round((0.5+formAdj)*1000)/10,
-      surface: Math.round((0.5+surfAdj)*1000)/10,
-      h2h:     h2hTotal>=3?Math.round((0.5+h2hAdj)*1000)/10:null,
-    }
-  };
-}
 
 // ─── ULEPSZONY MODEL POISSONA + DIXON-COLES ──────────────────────────────────
 // Źródła: Dixon & Coles (1997), Maher (1982), StatsUltra, ExPrysm methodology
@@ -606,14 +404,6 @@ function App(){
   const[loadPew,setLoadPew]=useState(false);
   const[remisy,setRemisy]=useState([]);
   const[loadRem,setLoadRem]=useState(false);
-  // ── TENIS ──
-  const[sport,setSport]=useState('football');
-  const[tennisKey,setTennisKey]=useState(()=>localStorage.getItem("tennisKey")||"");
-  const[tennisKeyInput,setTennisKeyInput]=useState("");
-  const[tennisConnected,setTennisConnected]=useState(()=>!!localStorage.getItem("tennisKey"));
-  const[tennisData,setTennisData]=useState(null);
-  const[tennisAnalysis,setTennisAnalysis]=useState(null);
-  const[loadTennis,setLoadTennis]=useState(false);
 
   // Ref zawsze trzyma aktualny selDate — fix stale closure w handleFetchDay
   const selDateRef=useRef(selDate);
@@ -643,109 +433,7 @@ function App(){
     setLoadDay(false);setStatus("");
   };
 
-  // ── TENIS HANDLERS ──
-  const handleTennisConnect=async()=>{
-    setError(null);
-    try{
-      await tennisGet({met:"Fixtures",from:selDate,to:selDate},tennisKeyInput.trim());
-      localStorage.setItem("tennisKey",tennisKeyInput.trim());
-      setTennisKey(tennisKeyInput.trim());
-      setTennisConnected(true);
-    }catch(e){setError("Błąd klucza AllSportsAPI: "+e.message);}
-  };
-
-  const handleFetchTennis=async()=>{
-    setLoadTennis(true);setError(null);setTennisData(null);setTennisAnalysis(null);
-    try{
-      setStatus("🎾 Pobieram mecze...");
-      const data = await fetchTennisDay(selDateRef.current,tennisKey,setStatus);
-      const rankMap = {}; // AllSportsAPI Rankings nie działa — używamy statycznej tabeli
-
-      // 1. Statyczna tabela (natychmiastowe, bez API)
-      // 2. API ranking (uzupełnienie)
-      let enriched = data.map(t=>({
-        ...t,
-        matches: t.matches.map(m=>({
-          ...m,
-          p1Rank: getStaticRank(m.p1) || findRank(m.p1,rankMap),
-          p2Rank: getStaticRank(m.p2) || findRank(m.p2,rankMap),
-        }))
-      }));
-
-      // Druga próba: dla nieznalezionych — pobierz przez Players API po ID
-      const missing=[];
-      enriched.forEach(t=>t.matches.forEach(m=>{
-        if(!m.p1Rank&&m.p1Id) missing.push({m,field:"p1Rank",id:m.p1Id});
-        if(!m.p2Rank&&m.p2Id) missing.push({m,field:"p2Rank",id:m.p2Id});
-      }));
-
-      if(missing.length>0){
-        const allMatches=enriched.flatMap(t=>t.matches);
-      const matched=allMatches.filter(m=>m.p1Rank||m.p2Rank).length;
-      setStatus(`🔍 Rankingi: ${matched}/${allMatches.length} meczów. Uzupełniam brakujące...`);
-        // Pobierz w paczkach po 4
-        for(let i=0;i<Math.min(missing.length,40);i+=4){
-          const batch=missing.slice(i,i+4);
-          const res=await Promise.allSettled(
-            batch.map(({id})=>tennisGet({met:"Players",playerId:id},tennisKey))
-          );
-          res.forEach((r,j)=>{
-            if(r.status!=="fulfilled"||!r.value) return;
-            const info=Array.isArray(r.value)?r.value[0]:r.value;
-            // Debug: log all fields to console
-            console.log("Player API response:", JSON.stringify(info).slice(0,300));
-            // Sprawdź wszystkie możliwe pola z rankingiem
-            const rank=parseInt(
-              info?.player_rank||info?.ranking||info?.atp_rank||
-              info?.wta_rank||info?.itf_rank||info?.singles_rank||
-              info?.player_ranking||info?.current_ranking||0
-            );
-            if(rank>0) batch[j].m[batch[j].field]=rank;
-          });
-          if(i+4<missing.length) await sleep(500);
-        }
-      }
-
-      setTennisData(enriched);
-    }catch(e){setError(e.message);}
-    setLoadTennis(false);setStatus("");
-  };
-
-  const handleTennisAnalyze=async(match)=>{
-    setTennisAnalysis(null);setLoading(true);setError(null);
-    try{
-      // Pobierz dane równolegle
-      setStatus("📊 Pobieranie profili zawodników...");
-      const[p1Info,p2Info,h2h]=await Promise.all([
-        fetchTennisPlayer(match.p1Id,tennisKey,setStatus,match.p1),
-        fetchTennisPlayer(match.p2Id,tennisKey,setStatus,match.p2),
-        fetchTennisH2H(match.p1Id,match.p2Id,tennisKey,setStatus),
-      ]);
-      // Forma z ostatnich meczów
-      const[p1Recent,p2Recent]=await Promise.all([
-        fetchTennisRecentMatches(match.p1Id,tennisKey,setStatus,match.p1),
-        fetchTennisRecentMatches(match.p2Id,tennisKey,setStatus,match.p2),
-      ]);
-      const surface=match.surface||null;
-      const p1Rank=parseInt(p1Info?.player_rank)||200;
-      const p2Rank=parseInt(p2Info?.player_rank)||200;
-      const p1WinPct=parseFloat(p1Info?.player_win_percentage)/100||0.5;
-      const p2WinPct=parseFloat(p2Info?.player_win_percentage)/100||0.5;
-      const p1Form=calcTennisRecentForm(p1Recent,match.p1Id,surface);
-      const p2Form=calcTennisRecentForm(p2Recent,match.p2Id,surface);
-      const h2hMatches=Array.isArray(h2h)?h2h:[];
-      const p1H2H=h2hMatches.filter(m=>{
-        const isP1Win=m.event_winner_code==="1";
-        const p1IsFirst=String(m.first_player_key)===String(match.p1Id);
-        return(p1IsFirst&&isP1Win)||(!p1IsFirst&&!isP1Win);
-      }).length;
-      const probs=tennisProbs({p1Rank,p2Rank,p1WinPct,p2WinPct,p1Form,p2Form,p1H2H,h2hTotal:h2hMatches.length,surface});
-      setTennisAnalysis({match,p1Info,p2Info,h2h:h2hMatches,p1Rank,p2Rank,p1H2H,p1Form,p2Form,p1WinPct,p2WinPct,probs,surface});
-    }catch(e){setError(e.message);}
-    setLoading(false);setStatus("");
-  };
-
-  const handleRemisy=async()=>{
+    const handleRemisy=async()=>{
     setView('remisy');setLoadRem(true);setRemisy([]);setError(null);
     const L=1.35,H=1.12;
     const results=[];
@@ -940,244 +628,14 @@ function App(){
         <Calendar sel={selDate} onSel={d=>{setSelDate(d);reset();}}/>
         <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1e293b"}}>
           <div style={{fontSize:13,color:"#94a3b8",marginBottom:10,textAlign:"center"}}>📅 {fmtDate(selDate)}</div>
-          <div style={{display:"flex",gap:8,marginBottom:10}}>
-            <button onClick={()=>{setSport('football');}} style={{flex:1,padding:"9px",borderRadius:10,border:"1px solid",borderColor:sport==='football'?"#10b981":"#334155",background:sport==='football'?"#10b981":"transparent",color:sport==='football'?"#000":"#94a3b8",fontSize:12,fontWeight:700,cursor:"pointer"}}>⚽ PIŁKA NOŻNA</button>
-            <button onClick={()=>{setSport('tennis');}} style={{flex:1,padding:"9px",borderRadius:10,border:"1px solid",borderColor:sport==='tennis'?"#f59e0b":"#334155",background:sport==='tennis'?"#f59e0b":"transparent",color:sport==='tennis'?"#000":"#f59e0b",fontSize:12,fontWeight:700,cursor:"pointer"}}>🎾 TENIS</button>
-          </div>
-          {sport==='football'&&<button onClick={handleFetchDay} disabled={busy} style={{...BTN,opacity:busy?0.5:1}}>{loadDay?"⟳ SZUKAM...":"SZUKAJ MECZÓW"}</button>}
-          {sport==='tennis'&&tennisConnected&&<button onClick={handleFetchTennis} disabled={busy||loadTennis} style={{...BTN,background:"#f59e0b",color:"#000",opacity:(busy||loadTennis)?0.5:1}}>{loadTennis?"⟳ SZUKAM...":"🎾 SZUKAJ MECZÓW TENISA"}</button>}
-          {sport==='tennis'&&!tennisConnected&&<div style={{fontSize:12,color:"#f59e0b",textAlign:"center",padding:"10px",background:"#1f1500",borderRadius:8}}>⬇ Najpierw połącz klucz AllSportsAPI poniżej</div>}
+          <button onClick={handleFetchDay} disabled={busy} style={{...BTN,opacity:busy?0.5:1}}>{loadDay?"⟳ SZUKAM...":"SZUKAJ MECZÓW"}</button>
         </div>
       </div>}
 
 
-      {/* ── TENIS: KLUCZ ── */}
-      {connected&&sport==='tennis'&&!tennisConnected&&!analysis&&<div style={CARD}>
-        <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:20,color:"#f59e0b",marginBottom:12,letterSpacing:"0.08em"}}>KLUCZ API — ALLSPORTSAPI.COM</div>
-        <p style={{fontSize:13,color:"#94a3b8",marginBottom:14,lineHeight:1.6}}>
-          Darmowy klucz z <a href="https://allsportsapi.com" target="_blank" style={{color:"#f59e0b"}}>allsportsapi.com</a> · ATP, WTA, H2H, statystyki
-        </p>
-        <div style={{display:"flex",gap:10}}>
-          <input value={tennisKeyInput} onChange={e=>setTennisKeyInput(e.target.value)} placeholder="Wklej klucz AllSportsAPI..." style={INP}/>
-          <button onClick={handleTennisConnect} disabled={!tennisKeyInput.trim()} style={{...BTN,width:"auto",padding:"11px 20px",background:"#f59e0b",color:"#000",opacity:tennisKeyInput.trim()?1:0.4}}>POŁĄCZ</button>
-        </div>
-      </div>}
 
-      {/* ── TENIS: SZUKAJ MECZÓW ── */}
-      {connected&&sport==='tennis'&&tennisConnected&&!tennisData&&!tennisAnalysis&&!analysis&&<div style={CARD}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
-          <span style={{fontSize:12,color:"#94a3b8"}}>🎾 Tenis — AllSportsAPI</span>
-          <button onClick={()=>{localStorage.removeItem("tennisKey");setTennisConnected(false);setTennisKey("");}} style={{background:"none",border:"none",color:"#475569",fontSize:11,cursor:"pointer"}}>zmień klucz</button>
-        </div>
-        <button onClick={handleFetchTennis} disabled={busy||loadTennis} style={{...BTN,background:"#f59e0b",color:"#000",opacity:(busy||loadTennis)?0.5:1}}>{loadTennis?"⟳ SZUKAM...":"🎾 SZUKAJ MECZÓW TENISA"}</button>
-      </div>}
-
-      {/* ── TENIS: LISTA MECZÓW ── */}}
-      {sport==='tennis'&&tennisData&&!tennisAnalysis&&!analysis&&<div>
-        {tennisData.length===0&&<div style={{...CARD,textAlign:"center",color:"#64748b"}}>Brak meczów tenisowych na ten dzień.</div>}
-        {tennisData.map(tournament=><div key={tournament.name}>
-          <div style={{fontSize:11,color:"#f59e0b",fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",margin:"12px 0 6px"}}>{tournament.name}</div>
-          {tournament.matches.map(m=>{
-              // Użyj seedingu z fixtures jeśli ranking nieznany
-              const seed1=parseInt(m.p1Seed)||0, seed2=parseInt(m.p2Seed)||0;
-              const seedRank1=seed1>0?seed1*10:null, seedRank2=seed2>0?seed2*10:null;
-              const hasRanks = m.p1Rank||m.p2Rank||seedRank1||seedRank2;
-              const r1=m.p1Rank||seedRank1||999, r2=m.p2Rank||seedRank2||999;
-              const p1q=Math.round((r2/(r1+r2))*100);
-              const p2q=100-p1q;
-              const p1Best=p1q>=p2q;
-              return<button key={m.id} onClick={()=>handleTennisAnalyze(m)} disabled={busy} style={{width:"100%",background:"#0f172a",border:"1px solid #1e293b",borderRadius:14,padding:"14px 16px",marginBottom:8,cursor:"pointer",textAlign:"left",opacity:busy?0.6:1}}>
-                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:13,fontWeight:700,color:"#f1f5f9"}}>{m.p1}</div>
-                    {m.p1Rank&&<div style={{fontSize:10,color:"#475569",marginTop:1}}>#{m.p1Rank}</div>}
-                  </div>
-                  <div style={{textAlign:"center",padding:"0 10px"}}>
-                    <div style={{fontSize:11,color:"#f59e0b",fontWeight:700}}>VS</div>
-                    <div style={{fontSize:10,color:"#475569"}}>{m.time}</div>
-                    {m.score&&<div style={{fontSize:11,color:"#10b981",fontWeight:700,marginTop:2}}>{m.score}</div>}
-                  </div>
-                  <div style={{flex:1,textAlign:"right"}}>
-                    <div style={{fontSize:13,fontWeight:700,color:"#f1f5f9"}}>{m.p2}</div>
-                    {m.p2Rank&&<div style={{fontSize:10,color:"#475569",marginTop:1}}>#{m.p2Rank}</div>}
-                  </div>
-                </div>
-                <div style={{display:"flex",gap:6}}>
-                  <div style={{flex:1,background:"#1e293b",borderRadius:8,padding:"6px 4px",textAlign:"center"}}>
-                    <div style={{fontSize:10,color:"#64748b",marginBottom:2}}>{m.p1.split(" ").pop()}</div>
-                    <div style={{fontSize:20,fontWeight:900,color:hasRanks?(p1Best?"#10b981":"#ef4444"):"#475569"}}>{hasRanks?`${p1q}%`:"?"}</div>
-                    {m.p1Rank&&<div style={{fontSize:9,color:"#475569",marginTop:1}}>#{m.p1Rank} ATP/WTA</div>}
-                  </div>
-                  <div style={{flex:"0 0 50px",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:2}}>
-                    <div style={{fontSize:9,color:"#475569"}}>{m.surface||"–"}</div>
-                  </div>
-                  <div style={{flex:1,background:"#1e293b",borderRadius:8,padding:"6px 4px",textAlign:"center"}}>
-                    <div style={{fontSize:10,color:"#64748b",marginBottom:2}}>{m.p2.split(" ").pop()}</div>
-                    <div style={{fontSize:20,fontWeight:900,color:hasRanks?(!p1Best?"#10b981":"#ef4444"):"#475569"}}>{hasRanks?`${p2q}%`:"?"}</div>
-                    {m.p2Rank&&<div style={{fontSize:9,color:"#475569",marginTop:1}}>#{m.p2Rank} ATP/WTA</div>}
-                  </div>
-                </div>
-              </button>;
-            })}
-        </div>)}
-      </div>}
-
-      {/* ── TENIS: ANALIZA ── */}
-      {tennisAnalysis&&!analysis&&(()=>{
-        const{match,p1Info,p2Info,h2h,p1Rank,p2Rank,p1H2H,p1Form,p2Form,p1WinPct,p2WinPct,probs,surface}=tennisAnalysis;
-        const p2H2H=h2h.length-p1H2H;
-        const favP=probs.p1>=probs.p2?probs.p1:probs.p2;
-        const favName=probs.p1>=probs.p2?match.p1:match.p2;
-        return<div>
-          {/* Sticky nav */}
-          <div style={{position:"sticky",top:0,zIndex:100,background:"#030712",padding:"10px 0 8px",marginBottom:8,borderBottom:"1px solid #1e293b",display:"flex",gap:8}}>
-            <button onClick={()=>setTennisAnalysis(null)} style={{flex:1,padding:"10px",background:"#1e293b",border:"none",borderRadius:10,color:"#94a3b8",fontSize:13,fontWeight:700,cursor:"pointer"}}>← POWRÓT</button>
-            <button onClick={()=>{setTennisAnalysis(null);setTennisData(null);}} style={{flex:1,padding:"10px",background:"#1e293b",border:"none",borderRadius:10,color:"#94a3b8",fontSize:13,fontWeight:700,cursor:"pointer"}}>📅 ZMIEŃ DZIEŃ</button>
-          </div>
-          {/* Header */}
-          <div style={{...CARD,borderColor:"#78350f"}}>
-            <div style={{textAlign:"center",fontSize:11,color:"#f59e0b",marginBottom:10,fontWeight:700,letterSpacing:"0.08em"}}>{match.league} · {match.round}</div>
-            {match.surface&&<div style={{textAlign:"center",fontSize:11,color:"#64748b",marginBottom:10}}>🏟 Nawierzchnia: <span style={{color:"#f59e0b",fontWeight:700}}>{match.surface}</span></div>}
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-              <div style={{flex:1,textAlign:"center"}}>
-                <div style={{fontSize:17,fontWeight:700,color:"#f1f5f9"}}>{match.p1}</div>
-                <div style={{fontSize:12,color:"#64748b",marginTop:4}}>Ranking #{p1Rank}</div>
-              </div>
-              <div style={{fontSize:22,fontFamily:"'Bebas Neue',cursive",color:"#f59e0b",padding:"0 16px"}}>VS</div>
-              <div style={{flex:1,textAlign:"center"}}>
-                <div style={{fontSize:17,fontWeight:700,color:"#f1f5f9"}}>{match.p2}</div>
-                <div style={{fontSize:12,color:"#64748b",marginTop:4}}>Ranking #{p2Rank}</div>
-              </div>
-            </div>
-          </div>
-          {/* Prognoza */}
-          <div style={{...CARD,background:"#0a0f00"}}>
-            <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,letterSpacing:"0.1em",color:"#f59e0b",marginBottom:16,textAlign:"center"}}>PROGNOZA WYNIKU</div>
-            <div style={{display:"flex",gap:12,marginBottom:16}}>
-              {[{name:match.p1,prob:probs.p1},{name:match.p2,prob:probs.p2}].map(({name,prob})=>{
-                const best=prob===Math.max(probs.p1,probs.p2);
-                return<div key={name} style={{flex:1,textAlign:"center"}}>
-                  <div style={{fontSize:10,color:"#64748b",marginBottom:6,textTransform:"uppercase",lineHeight:1.3}}>{name}</div>
-                  <div style={{fontSize:42,fontWeight:900,color:best?"#10b981":"#ef4444",lineHeight:1}}>{prob}%</div>
-                  <div style={{height:6,background:"#1e293b",borderRadius:3,marginTop:8}}>
-                    <div style={{width:`${prob}%`,height:"100%",background:best?"#10b981":"#ef4444",borderRadius:3,transition:"width 1s ease"}}/>
-                  </div>
-                  {best&&<div style={{fontSize:9,color:"#10b981",fontWeight:700,marginTop:4}}>🏆 FAWORYT</div>}
-                </div>;
-              })}
-            </div>
-
-            {/* Czynniki modelu */}
-            {probs.factors&&<div style={{marginBottom:14}}>
-              <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8}}>Czynniki analizy (5 zmiennych)</div>
-              {[
-                {label:"🏅 Ranking ATP/WTA",val:probs.factors.ranking,weight:"35%"},
-                {label:"📊 % wygranych (sezon)",val:probs.factors.winPct,weight:"15%"},
-                {label:"📈 Forma ostatnie 10",val:probs.factors.form,weight:"20%"},
-                {label:"🏟 Nawierzchnia",val:probs.factors.surface,weight:"10%"},
-                {label:"⚔️ H2H bezpośredni",val:probs.factors.h2h,weight:"20%"},
-              ].filter(f=>f.val!=null).map(({label,val,weight})=>{
-                const favorsP1=val>50;
-                return<div key={label} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
-                  <span style={{fontSize:11,color:"#64748b",flex:"0 0 160px"}}>{label}</span>
-                  <div style={{flex:1,height:6,background:"#1e293b",borderRadius:3,position:"relative"}}>
-                    <div style={{position:"absolute",left:"50%",top:0,width:2,height:"100%",background:"#334155"}}/>
-                    <div style={{
-                      position:"absolute",
-                      left:favorsP1?`${50}%`:`${val}%`,
-                      width:`${Math.abs(val-50)}%`,
-                      height:"100%",
-                      background:favorsP1?"#10b981":"#ef4444",
-                      borderRadius:3
-                    }}/>
-                  </div>
-                  <span style={{fontSize:10,color:favorsP1?"#10b981":"#ef4444",fontWeight:700,flex:"0 0 28px",textAlign:"right"}}>{val}%</span>
-                  <span style={{fontSize:9,color:"#334155",flex:"0 0 24px",textAlign:"right"}}>{weight}</span>
-                </div>;
-              })}
-            </div>}
-
-            {/* Value bet */}
-            <div style={{background:"#0f172a",borderRadius:8,padding:"10px 12px"}}>
-              <div style={{fontSize:11,color:"#f59e0b",fontWeight:700,marginBottom:6}}>💰 OCENA BUKMACHERSKA</div>
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                <div style={{fontSize:11,color:"#94a3b8"}}>
-                  {favP>=72?<span style={{color:"#10b981",fontWeight:700}}>🔒 PEWNY TYP</span>:favP>=62?<span style={{color:"#f59e0b",fontWeight:700}}>✅ WARTOŚCIOWY TYP</span>:<span style={{color:"#ef4444"}}>⚠️ RYZYKOWNY</span>}
-                  <span style={{color:"#475569"}}> — min. kurs: </span>
-                  <span style={{color:"#f59e0b",fontWeight:700,fontSize:14}}>{(100/favP).toFixed(2)}</span>
-                </div>
-                <div style={{textAlign:"right"}}>
-                  <div style={{fontSize:9,color:"#475569"}}>sprawiedliwy kurs</div>
-                  <div style={{fontSize:18,fontWeight:900,color:"#10b981"}}>{favName.split(" ").pop()}</div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Szczegółowe statystyki */}
-          <div style={CARD}>
-            <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,letterSpacing:"0.1em",color:"#f59e0b",marginBottom:12}}>📊 PORÓWNANIE STATYSTYK</div>
-            {[
-              {label:"Ranking ATP/WTA",h:p1Rank,a:p2Rank,lower:true,fmt:v=>`#${v}`},
-              {label:"% wygranych (sezon)",h:Math.round(p1WinPct*100),a:Math.round(p2WinPct*100),fmt:v=>`${v}%`},
-              {label:"Forma (ost. 10 meczów)",h:Math.round((p1Form?.overall||0.5)*100),a:Math.round((p2Form?.overall||0.5)*100),fmt:v=>`${v}%`},
-              {label:`Forma — ${surface||"nawierzchnia"}`,h:Math.round((p1Form?.surface||p1Form?.overall||0.5)*100),a:Math.round((p2Form?.surface||p2Form?.overall||0.5)*100),fmt:v=>`${v}%`},
-            ].map(({label,h,a,lower,fmt})=>{
-              const hBetter=lower?h<a:h>a;
-              const aBetter=lower?a<h:a>h;
-              return<div key={label} style={{display:"flex",alignItems:"center",padding:"8px 0",borderBottom:"1px solid #1e293b"}}>
-                <span style={{flex:1,textAlign:"right",fontFamily:"'DM Mono',monospace",fontSize:13,color:hBetter?"#10b981":"#94a3b8",fontWeight:hBetter?700:400}}>{fmt(h)}</span>
-                <span style={{width:140,textAlign:"center",fontSize:10,color:"#475569",padding:"0 8px"}}>{label}</span>
-                <span style={{flex:1,fontFamily:"'DM Mono',monospace",fontSize:13,color:aBetter?"#10b981":"#94a3b8",fontWeight:aBetter?700:400}}>{fmt(a)}</span>
-              </div>;
-            })}
-          </div>
-          {/* H2H */}
-          {h2h.length>0&&<div style={CARD}>
-            <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,letterSpacing:"0.1em",color:"#f59e0b",marginBottom:12}}>H2H — HISTORIA BEZPOŚREDNIA</div>
-            <div style={{display:"flex",gap:8,marginBottom:14}}>
-              <div style={{flex:1,background:"#0f172a",borderRadius:10,padding:"10px",textAlign:"center"}}>
-                <div style={{fontSize:28,fontWeight:900,color:"#10b981"}}>{p1H2H}</div>
-                <div style={{fontSize:11,color:"#64748b"}}>{match.p1}</div>
-              </div>
-              <div style={{flex:1,background:"#0f172a",borderRadius:10,padding:"10px",textAlign:"center"}}>
-                <div style={{fontSize:28,fontWeight:900,color:"#ef4444"}}>{p2H2H}</div>
-                <div style={{fontSize:11,color:"#64748b"}}>{match.p2}</div>
-              </div>
-            </div>
-            {h2h.slice(0,5).map((m,i)=>(
-              <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #1e293b",fontSize:12}}>
-                <span style={{color:"#64748b"}}>{m.event_date||""}</span>
-                <span style={{color:"#f1f5f9",fontWeight:600}}>{m.event_first_player} vs {m.event_second_player}</span>
-                <span style={{color:"#10b981",fontWeight:700}}>{m.event_final_result||m.event_game_result||""}</span>
-              </div>
-            ))}
-          </div>}
-          {/* Statystyki graczy */}
-          {(p1Info||p2Info)&&<div style={CARD}>
-            <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,letterSpacing:"0.1em",color:"#f59e0b",marginBottom:12}}>STATYSTYKI GRACZY</div>
-            {[{info:p1Info,name:match.p1},{info:p2Info,name:match.p2}].filter(x=>x.info).map(({info,name})=>(
-              <div key={name} style={{marginBottom:14,paddingBottom:14,borderBottom:"1px solid #1e293b"}}>
-                <div style={{fontSize:13,fontWeight:700,color:"#f1f5f9",marginBottom:8}}>{name}</div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
-                  {[
-                    ["Kraj",info.player_country],
-                    ["Ranking",`#${info.player_rank||"?"}`],
-                    ["% wygranych",info.player_win_percentage?`${info.player_win_percentage}%`:"–"],
-                    ["Wiek",info.player_age||"–"],
-                  ].map(([k,v])=>v&&<div key={k} style={{background:"#0f172a",borderRadius:8,padding:"6px 10px"}}>
-                    <div style={{fontSize:9,color:"#475569",textTransform:"uppercase"}}>{k}</div>
-                    <div style={{fontSize:13,fontWeight:700,color:"#f1f5f9"}}>{v}</div>
-                  </div>)}
-                </div>
-              </div>
-            ))}
-          </div>}
-        </div>;
-      })()}
-
-      {/* ── KROK 2: NAWIGACJA ── */}
-      {sport==='football'&&dayData&&!analysis&&<div style={{marginBottom:14}}>
+            {/* ── KROK 2: NAWIGACJA ── */}
+      {dayData&&!analysis&&<div style={{marginBottom:14}}>
         <div style={{display:"flex",gap:6,marginBottom:12}}>
           <button onClick={()=>{setView('leagues');setSelLeague('');}} style={{flex:1,padding:"9px 4px",borderRadius:10,border:"1px solid",borderColor:view==='leagues'?"#10b981":"#334155",background:view==='leagues'?"#10b981":"#0f172a",color:view==='leagues'?"#000":"#94a3b8",fontSize:12,fontWeight:700,cursor:"pointer"}}>🏆 LIGI</button>
           <button onClick={handlePewniaki} style={{flex:1,padding:"9px 4px",borderRadius:10,border:"1px solid",borderColor:view==='pewniaki'?"#f59e0b":"#334155",background:view==='pewniaki'?"#f59e0b":"#0f172a",color:view==='pewniaki'?"#000":"#f59e0b",fontSize:12,fontWeight:700,cursor:"pointer"}}>🔥 PEWNIAKI</button>
