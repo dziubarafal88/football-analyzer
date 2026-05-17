@@ -99,6 +99,8 @@ async function fetchTennisDay(dateStr, apiKey, onStatus) {
       p2: m.event_second_player, p2Id: m.second_player_key,
       p1Rank: parseInt(m.event_first_player_ranking)||null,
       p2Rank: parseInt(m.event_second_player_ranking)||null,
+      p1Seed: parseInt(m.event_first_player_seed)||null,
+      p2Seed: parseInt(m.event_second_player_seed)||null,
       time: m.event_time || "TBD",
       status: m.event_status,
       score: m.event_game_result || "",
@@ -111,45 +113,43 @@ async function fetchTennisDay(dateStr, apiKey, onStatus) {
 }
 
 
-// ── STATYCZNA TABELA RANKINGÓW ATP/WTA (top 200) ─────────────────────────────
-// Aktualizowana co sezon. Pokrywa wszystkich graczy z turniejów ATP/WTA/Challenger
+// ── STATYCZNA TABELA RANKINGÓW ATP/WTA (maj 2026) ────────────────────────────
+// Tylko zweryfikowane rankingi ATP i WTA. ITF nie uwzględniony — seeding z fixtures.
 const STATIC_RANKS = {
-  // ATP Singles top 200
-  "sinner":1,"alcaraz":2,"djokovic":3,"zverev":4,"medvedev":5,
-  "fritz":6,"ruud":7,"hurkacz":8,"de minaur":9,"musetti":10,
-  "paul":11,"rublev":12,"dimitrov":13,"korda":14,"draper":15,
-  "rune":16,"bublik":17,"shelton":18,"auger-aliassime":19,"tiafoe":20,
-  "norrie":21,"coric":22,"nakashima":23,"cerundolo":24,"baez":25,
-  "lehecka":26,"machac":27,"struff":28,"mensik":29,"tabilo":30,
-  "wawrinka":31,"mpetshi perricard":32,"fils":33,"hanfmann":34,"borges":35,
-  "sousa":36,"comesana":37,"muller":38,"schwartzman":39,"rinderknech":40,
-  "halys":41,"kotov":42,"etcheverry":43,"giron":44,"griekspoor":45,
-  "altmaier":46,"duckworth":47,"skatov":48,"brancaccio":49,"rodriguez":50,
-  "monfils":51,"brooksby":52,"kokkinakis":53,"safiullin":54,"galan":55,
-  "fearnley":56,"cressy":57,"o'connell":58,"johnson":59,"nishikori":60,
-  "khachanov":61,"tabur":62,"bellucci":63,"basavareddy":64,"michelsen":65,
-  "cobolli":66,"seyboth wild":67,"schoolkate":68,"atmane":69,"arnaldi":70,
-  "navone":71,"fokina":72,"monteiro":73,"mager":74,"lajovic":75,
-  "thiem":76,"carballes baena":77,"marterer":78,"ofner":79,"nishioka":80,
-  "mmoh":81,"kubler":82,"harris":83,"cecchinato":84,"berankis":85,
-  "varillas":86,"vukic":87,"ymer":88,"diallo":89,"goffin":90,
-  "andreev":91,"cazaux":92,"mayot":93,"rehberg":94,"feldbausch":95,
-  "fomin":96,"pankin":97,"ursu":98,"sarksian":99,"binda":100,
-  "echeverria":101,"vandermeersch":102,"purtseladze":103,
-  // WTA Singles top 200
-  "swiatek":1,"sabalenka":2,"rybakina":3,"gauff":4,"pegula":5,
-  "jabeur":6,"vondrousova":7,"haddad maia":8,"sorribes tormo":9,"keys":10,
-  "ostapenko":11,"bencic":12,"kerber":13,"azarenka":14,"kvitova":15,
-  "pliskova":16,"kontaveit":17,"halep":18,"garcia":19,"kasatkina":20,
-  "muchova":21,"pavlyuchenkova":22,"linette":23,"alizé cornet":24,"juvan":25,
-  "andreescu":26,"wickmayer":27,"paolini":28,"krejcikova":29,"navarro":30,
-  "fernandez":31,"potapova":32,"alexandrova":33,"frech":34,"tomova":35,
-  "sherif":36,"bucsa":37,"minnen":38,"grabher":39,"pigossi":40,
-  "bolsova":41,"tauson":42,"samsonova":43,"anisimova":44,"ostlund":45,
-  "siegemund":46,"pera":47,"niemeier":48,"mchale":49,"bouchard":50,
-  "stephens":51,"cirstea":52,"vekic":53,"siniakova":54,"kucova":55,
-  "doi":56,"gleason":57,"jacquemot":58,"milovanovic":59,"ansari":60,
-  "dedura":61,"quinn":62,"schoenhaus":63,
+  // ── ATP top 100 ──
+  "sinner":1,"alcaraz":2,"zverev":3,"djokovic":4,"medvedev":5,
+  "fritz":6,"ruud":7,"hurkacz":8,"de minaur":9,"rune":10,
+  "musetti":11,"paul":12,"rublev":13,"dimitrov":14,"draper":15,
+  "korda":16,"shelton":17,"bublik":18,"mensik":19,"fils":20,
+  "auger-aliassime":21,"tiafoe":22,"cerundolo":23,"lehecka":24,"baez":25,
+  "machac":26,"mpetshi perricard":27,"tabilo":28,"struff":29,"fearnley":30,
+  "cobolli":31,"norrie":32,"borges":33,"kotov":34,"griekspoor":35,
+  "nakashima":36,"coric":37,"etcheverry":38,"rinderknech":39,"giron":40,
+  "halys":41,"safiullin":42,"navone":43,"arnaldi":44,"fokina":45,
+  "altmaier":46,"duckworth":47,"vukic":48,"michelsen":49,"seyboth wild":50,
+  "kokkinakis":51,"galan":52,"monfils":53,"o'connell":54,"brancaccio":55,
+  "tabur":56,"basavareddy":57,"schoolkate":58,"atmane":59,"mmoh":60,
+  "monteiro":61,"lajovic":62,"ofner":63,"carballes baena":64,"cecchinato":65,
+  "thiem":66,"cazaux":67,"varillas":68,"ymer":69,"rodriguez":70,
+  "nishioka":71,"mayot":72,"harris":73,"goffin":74,"kubler":75,
+  "mager":76,"berankis":77,"diallo":78,"brooksby":79,"skatov":80,
+  "muller":81,"hanfmann":82,"cressy":83,"wawrinka":84,"schwartzman":85,
+  "sousa":86,"bellier":87,"bellucci":88,"comesana":89,"nishikori":90,
+  "andreev":91,"martin":92,"khachanov":93,"kwon":94,"johnson":95,
+  "rehberg":96,"feldbausch":97,"choinski":98,
+  // ── WTA top 100 ──
+  "swiatek":1,"sabalenka":2,"gauff":3,"rybakina":4,"pegula":5,
+  "paolini":6,"navarro":7,"keys":8,"muchova":9,"kasatkina":10,
+  "haddad maia":11,"jabeur":12,"ostapenko":13,"alexandrova":14,"potapova":15,
+  "samsonova":16,"andreescu":17,"frech":18,"vondrousova":19,"garcia":20,
+  "fernandez":21,"tomova":22,"krejcikova":23,"bencic":24,"tauson":25,
+  "sherif":26,"bucsa":27,"linette":28,"anisimova":29,"siegemund":30,
+  "vekic":31,"minnen":32,"pera":33,"niemeier":34,"cirstea":35,
+  "grabher":36,"siniakova":37,"sorribes tormo":38,"bolsova":39,"pigossi":40,
+  "kvitova":41,"azarenka":42,"halep":43,"kontaveit":44,"pliskova":45,
+  "kerber":46,"pavlyuchenkova":47,"stephens":48,"mchale":49,"doi":50,
+  "gleason":51,"jacquemot":52,"milovanovic":53,"ansari":54,"schoenhaus":55,
+  "quinn":56,"moratelli":57,"cristian":58,"zavatska":59,"kucova":60,
 };
 
 function getStaticRank(name) {
@@ -192,7 +192,6 @@ async function buildRankMap(apiKey) {
   // Debug: pokaż pierwszego gracza żeby zobaczyć strukturę
   const sample = all.length>0 ? JSON.stringify(all[0]) : "PUSTA ODPOWIEDŹ";
   // Zapisz do widocznego stanu zamiast console
-  window._tennisDebug = "Graczy z API: "+all.length+"\n\nPierwszy rekord:\n"+sample.slice(0,500);
 
   const map = {};
   all.forEach(p=>{
@@ -615,7 +614,6 @@ function App(){
   const[tennisData,setTennisData]=useState(null);
   const[tennisAnalysis,setTennisAnalysis]=useState(null);
   const[loadTennis,setLoadTennis]=useState(false);
-  const[rankDebug,setRankDebug]=useState(""); // widoczny debug panel
 
   // Ref zawsze trzyma aktualny selDate — fix stale closure w handleFetchDay
   const selDateRef=useRef(selDate);
@@ -659,12 +657,9 @@ function App(){
   const handleFetchTennis=async()=>{
     setLoadTennis(true);setError(null);setTennisData(null);setTennisAnalysis(null);
     try{
-      setStatus("🎾 Pobieram mecze i rankingi...");
-      // Pobierz mecze i rankingi równolegle
-      const [data, rankMap] = await Promise.all([
-        fetchTennisDay(selDateRef.current,tennisKey,setStatus),
-        buildRankMap(tennisKey),
-      ]);
+      setStatus("🎾 Pobieram mecze...");
+      const data = await fetchTennisDay(selDateRef.current,tennisKey,setStatus);
+      const rankMap = {}; // AllSportsAPI Rankings nie działa — używamy statycznej tabeli
 
       // 1. Statyczna tabela (natychmiastowe, bez API)
       // 2. API ranking (uzupełnienie)
@@ -687,7 +682,6 @@ function App(){
       if(missing.length>0){
         const allMatches=enriched.flatMap(t=>t.matches);
       const matched=allMatches.filter(m=>m.p1Rank||m.p2Rank).length;
-      setRankDebug(window._tennisDebug||"brak danych debug");
       setStatus(`🔍 Rankingi: ${matched}/${allMatches.length} meczów. Uzupełniam brakujące...`);
         // Pobierz w paczkach po 4
         for(let i=0;i<Math.min(missing.length,40);i+=4){
@@ -978,20 +972,17 @@ function App(){
         <button onClick={handleFetchTennis} disabled={busy||loadTennis} style={{...BTN,background:"#f59e0b",color:"#000",opacity:(busy||loadTennis)?0.5:1}}>{loadTennis?"⟳ SZUKAM...":"🎾 SZUKAJ MECZÓW TENISA"}</button>
       </div>}
 
-      {/* DEBUG PANEL — tymczasowy */}
-      {sport==='tennis'&&rankDebug&&<div style={{background:"#0a0a0a",border:"1px solid #f59e0b",borderRadius:10,padding:"12px",marginBottom:12,fontSize:10,color:"#f59e0b",fontFamily:"monospace",whiteSpace:"pre-wrap",wordBreak:"break-all"}}>
-        <div style={{fontWeight:700,marginBottom:6}}>🔍 DEBUG — struktura rankingów API:</div>
-        {rankDebug}
-      </div>}
-
       {/* ── TENIS: LISTA MECZÓW ── */}}
       {sport==='tennis'&&tennisData&&!tennisAnalysis&&!analysis&&<div>
         {tennisData.length===0&&<div style={{...CARD,textAlign:"center",color:"#64748b"}}>Brak meczów tenisowych na ten dzień.</div>}
         {tennisData.map(tournament=><div key={tournament.name}>
           <div style={{fontSize:11,color:"#f59e0b",fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",margin:"12px 0 6px"}}>{tournament.name}</div>
           {tournament.matches.map(m=>{
-              const hasRanks = m.p1Rank||m.p2Rank;
-              const r1=m.p1Rank||500, r2=m.p2Rank||500;
+              // Użyj seedingu z fixtures jeśli ranking nieznany
+              const seed1=parseInt(m.p1Seed)||0, seed2=parseInt(m.p2Seed)||0;
+              const seedRank1=seed1>0?seed1*10:null, seedRank2=seed2>0?seed2*10:null;
+              const hasRanks = m.p1Rank||m.p2Rank||seedRank1||seedRank2;
+              const r1=m.p1Rank||seedRank1||999, r2=m.p2Rank||seedRank2||999;
               const p1q=Math.round((r2/(r1+r2))*100);
               const p2q=100-p1q;
               const p1Best=p1q>=p2q;
