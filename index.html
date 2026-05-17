@@ -567,45 +567,43 @@ function App(){
     setLoadTennis(true);setError(null);setTennisData(null);setTennisAnalysis(null);
     try{
       setStatus("🎾 Pobieram mecze...");
-      const [data, rankMap] = await Promise.all([
-        fetchTennisDay(selDateRef.current,tennisKey,setStatus),
-        fetchTennisRankings(tennisKey),
-      ]);
-      // Attach rankings to each match using smart lookup
+      const data = await fetchTennisDay(selDateRef.current,tennisKey,setStatus);
+
+      // Zbierz wszystkie unikalne ID zawodników
+      const playerIds = new Set();
+      data.forEach(t=>t.matches.forEach(m=>{
+        if(m.p1Id) playerIds.add(String(m.p1Id));
+        if(m.p2Id) playerIds.add(String(m.p2Id));
+      }));
+      const ids = [...playerIds];
+      setStatus(`🔍 Pobieranie rankingów ${ids.length} zawodników...`);
+
+      // Pobierz wszystkich zawodników po ID w paczkach po 5 (rate limit)
+      const playerMap = {}; // id -> rank
+      const batchSize = 5;
+      for(let i=0;i<ids.length;i+=batchSize){
+        const batch = ids.slice(i,i+batchSize);
+        const results = await Promise.allSettled(
+          batch.map(id=>tennisGet({met:"Players",playerId:id},tennisKey))
+        );
+        results.forEach((res,j)=>{
+          if(res.status!=="fulfilled"||!res.value) return;
+          const info=Array.isArray(res.value)?res.value[0]:res.value;
+          const rank=parseInt(info?.player_rank||0);
+          if(rank>0) playerMap[batch[j]]=rank;
+        });
+        if(i+batchSize<ids.length) await sleep(600); // rate limit
+      }
+
+      // Przypisz rankingi do meczów
       const enriched = data.map(t=>({
         ...t,
         matches: t.matches.map(m=>({
           ...m,
-          p1Rank: lookupRank(m.p1, rankMap),
-          p2Rank: lookupRank(m.p2, rankMap),
+          p1Rank: playerMap[String(m.p1Id)]||null,
+          p2Rank: playerMap[String(m.p2Id)]||null,
         }))
       }));
-      // For players still without rank — fetch individually (batch, max 20)
-      const unranked = [];
-      enriched.forEach(t=>t.matches.forEach(m=>{
-        if(!m.p1Rank&&m.p1Id) unranked.push({match:m,player:"p1",id:m.p1Id,name:m.p1});
-        if(!m.p2Rank&&m.p2Id) unranked.push({match:m,player:"p2",id:m.p2Id,name:m.p2});
-      }));
-      // Fetch up to 15 unknown players individually
-      const toFetch = unranked.slice(0,15);
-      if(toFetch.length>0){
-        setStatus(`🔍 Szukam rankingów dla ${toFetch.length} zawodników...`);
-        const fetched = await Promise.allSettled(
-          toFetch.map(u=>tennisGet({met:"Players",playerId:u.id},tennisKey).catch(()=>null))
-        );
-        fetched.forEach((res,i)=>{
-          if(res.status!=="fulfilled"||!res.value) return;
-          const info=Array.isArray(res.value)?res.value[0]:res.value;
-          const rank=parseInt(info?.player_rank||info?.ranking_rank||0);
-          if(!rank) return;
-          const {match,player}=toFetch[i];
-          const t=enriched.find(t=>t.matches.includes(match));
-          if(t){
-            const m=t.matches.find(m=>m===match);
-            if(m) m[player==="p1"?"p1Rank":"p2Rank"]=rank;
-          }
-        });
-      }
       setTennisData(enriched);
     }catch(e){setError(e.message);}
     setLoadTennis(false);setStatus("");
