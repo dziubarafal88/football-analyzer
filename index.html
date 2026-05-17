@@ -190,8 +190,9 @@ async function buildRankMap(apiKey) {
   const all = results.flatMap(r=>r.status==="fulfilled"?(r.value||[]):[]);
 
   // Debug: pokaż pierwszego gracza żeby zobaczyć strukturę
-  if(all.length>0) console.log("Rankings API sample:", JSON.stringify(all[0]));
-  else console.log("Rankings: empty response from all types");
+  const sample = all.length>0 ? JSON.stringify(all[0]) : "PUSTA ODPOWIEDŹ";
+  // Zapisz do widocznego stanu zamiast console
+  window._tennisDebug = "Graczy z API: "+all.length+"\n\nPierwszy rekord:\n"+sample.slice(0,500);
 
   const map = {};
   all.forEach(p=>{
@@ -614,6 +615,7 @@ function App(){
   const[tennisData,setTennisData]=useState(null);
   const[tennisAnalysis,setTennisAnalysis]=useState(null);
   const[loadTennis,setLoadTennis]=useState(false);
+  const[rankDebug,setRankDebug]=useState(""); // widoczny debug panel
 
   // Ref zawsze trzyma aktualny selDate — fix stale closure w handleFetchDay
   const selDateRef=useRef(selDate);
@@ -683,8 +685,10 @@ function App(){
       }));
 
       if(missing.length>0){
-        const matched=enriched.flatMap(t=>t.matches).filter(m=>m.p1Rank||m.p2Rank).length;
-      setStatus(`🔍 Rankingi: ${matched}/${enriched.flatMap(t=>t.matches).length} meczów. Uzupełniam brakujące...`);
+        const allMatches=enriched.flatMap(t=>t.matches);
+      const matched=allMatches.filter(m=>m.p1Rank||m.p2Rank).length;
+      setRankDebug(window._tennisDebug||"brak danych debug");
+      setStatus(`🔍 Rankingi: ${matched}/${allMatches.length} meczów. Uzupełniam brakujące...`);
         // Pobierz w paczkach po 4
         for(let i=0;i<Math.min(missing.length,40);i+=4){
           const batch=missing.slice(i,i+4);
@@ -974,7 +978,13 @@ function App(){
         <button onClick={handleFetchTennis} disabled={busy||loadTennis} style={{...BTN,background:"#f59e0b",color:"#000",opacity:(busy||loadTennis)?0.5:1}}>{loadTennis?"⟳ SZUKAM...":"🎾 SZUKAJ MECZÓW TENISA"}</button>
       </div>}
 
-      {/* ── TENIS: LISTA MECZÓW ── */}
+      {/* DEBUG PANEL — tymczasowy */}
+      {sport==='tennis'&&rankDebug&&<div style={{background:"#0a0a0a",border:"1px solid #f59e0b",borderRadius:10,padding:"12px",marginBottom:12,fontSize:10,color:"#f59e0b",fontFamily:"monospace",whiteSpace:"pre-wrap",wordBreak:"break-all"}}>
+        <div style={{fontWeight:700,marginBottom:6}}>🔍 DEBUG — struktura rankingów API:</div>
+        {rankDebug}
+      </div>}
+
+      {/* ── TENIS: LISTA MECZÓW ── */}}
       {sport==='tennis'&&tennisData&&!tennisAnalysis&&!analysis&&<div>
         {tennisData.length===0&&<div style={{...CARD,textAlign:"center",color:"#64748b"}}>Brak meczów tenisowych na ten dzień.</div>}
         {tennisData.map(tournament=><div key={tournament.name}>
