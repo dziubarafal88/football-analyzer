@@ -787,9 +787,7 @@ function App(){
         {tennisData.length===0&&<div style={{...CARD,textAlign:"center",color:"#64748b"}}>Brak meczów tenisowych na ten dzień.</div>}
         {tennisData.map(tournament=><div key={tournament.name}>
           <div style={{fontSize:11,color:"#f59e0b",fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",margin:"12px 0 6px"}}>{tournament.name}</div>
-          {tournament.matches.map(m=>(
-            {(()=>{
-              // Szybka kalkulacja % z rankingów bezpośrednio na kartce
+          {tournament.matches.map(m=>{
               const r1=m.p1Rank||200, r2=m.p2Rank||200;
               const p1q=Math.round((r2/(r1+r2))*100);
               const p2q=100-p1q;
@@ -812,21 +810,20 @@ function App(){
                 </div>
                 <div style={{display:"flex",gap:6}}>
                   <div style={{flex:1,background:"#1e293b",borderRadius:8,padding:"6px 4px",textAlign:"center"}}>
-                    <div style={{fontSize:10,color:"#64748b",marginBottom:2}}>wygrana</div>
+                    <div style={{fontSize:10,color:"#64748b",marginBottom:2}}>{m.p1.split(" ").pop()}</div>
                     <div style={{fontSize:20,fontWeight:900,color:p1Best?"#10b981":"#ef4444"}}>{p1q}%</div>
                   </div>
-                  <div style={{flex:"0 0 60px",background:"#0f172a",borderRadius:8,padding:"6px 4px",textAlign:"center",border:"1px solid #1e293b"}}>
-                    <div style={{fontSize:9,color:"#475569",marginBottom:2}}>{m.surface||"?"}</div>
-                    <div style={{fontSize:10,color:"#334155",marginTop:2}}>tap → pełna analiza</div>
+                  <div style={{flex:"0 0 50px",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:2}}>
+                    <div style={{fontSize:9,color:"#475569"}}>{m.surface||"–"}</div>
+                    <div style={{fontSize:9,color:"#1e293b"}}>▼</div>
                   </div>
                   <div style={{flex:1,background:"#1e293b",borderRadius:8,padding:"6px 4px",textAlign:"center"}}>
-                    <div style={{fontSize:10,color:"#64748b",marginBottom:2}}>wygrana</div>
+                    <div style={{fontSize:10,color:"#64748b",marginBottom:2}}>{m.p2.split(" ").pop()}</div>
                     <div style={{fontSize:20,fontWeight:900,color:!p1Best?"#10b981":"#ef4444"}}>{p2q}%</div>
                   </div>
                 </div>
               </button>;
-            })()}
-          ))}
+            })}
         </div>)}
       </div>}
 
