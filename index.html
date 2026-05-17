@@ -97,6 +97,78 @@ function cacheClear() {
   } catch {}
 }
 
+// ── PREDICTION TRACKER (walk-forward backtest na własnych predykcjach) ───────
+function savePrediction(matchId, homeTeam, awayTeam, leagueCode, probs, utcDate) {
+  try {
+    const log = JSON.parse(localStorage.getItem('fba_predictions') || '[]');
+    // Sprawdź czy już istnieje
+    if (log.find(p => p.matchId === matchId)) return;
+    log.push({
+      matchId, homeTeam, awayTeam, leagueCode,
+      probs: { home: probs.home, draw: probs.draw, away: probs.away },
+      utcDate, savedAt: Date.now(),
+      result: null // wypełniane gdy mecz się zakończy
+    });
+    // Zatrzymaj max ostatnie 500
+    if (log.length > 500) log.splice(0, log.length - 500);
+    localStorage.setItem('fba_predictions', JSON.stringify(log));
+  } catch {}
+}
+
+function getPredictionStats() {
+  try {
+    const log = JSON.parse(localStorage.getItem('fba_predictions') || '[]');
+    const completed = log.filter(p => p.result !== null);
+    if (completed.length === 0) return { count: 0, total: log.length };
+    let correct = 0, rpsSum = 0, brierSum = 0, logLossSum = 0;
+    completed.forEach(p => {
+      const r = p.result; // 0=home, 1=draw, 2=away
+      const probArr = [p.probs.home, p.probs.draw, p.probs.away];
+      const predicted = probArr.indexOf(Math.max(...probArr));
+      if (predicted === r) correct++;
+      rpsSum += calcRPS(p.probs, r);
+      brierSum += calcBrier(p.probs, r);
+      logLossSum += calcLogLoss(p.probs, r);
+    });
+    return {
+      count: completed.length,
+      total: log.length,
+      accuracy: Math.round(correct / completed.length * 1000) / 10,
+      rps: Math.round(rpsSum / completed.length * 10000) / 10000,
+      brier: Math.round(brierSum / completed.length * 10000) / 10000,
+      logLoss: Math.round(logLossSum / completed.length * 1000) / 1000,
+    };
+  } catch { return { count: 0, total: 0 }; }
+}
+
+// Aktualizuje wyniki dla zakończonych meczów
+async function updatePredictionResults(token) {
+  try {
+    const log = JSON.parse(localStorage.getItem('fba_predictions') || '[]');
+    const unresolved = log.filter(p => p.result === null && new Date(p.utcDate) < new Date(Date.now() - 3*3600*1000));
+    if (unresolved.length === 0) return 0;
+    let updated = 0;
+    // Sprawdź statusy w paczkach po 10 (rate limit)
+    for (let i=0;i<Math.min(unresolved.length, 30);i++){
+      try {
+        const m = await fdGet(`matches/${unresolved[i].matchId}`, token);
+        if (m.match?.status === "FINISHED") {
+          const sh = m.match.score?.fullTime?.home;
+          const sa = m.match.score?.fullTime?.away;
+          if (sh != null && sa != null) {
+            const r = sh > sa ? 0 : sh === sa ? 1 : 2;
+            const idx = log.findIndex(p => p.matchId === unresolved[i].matchId);
+            if (idx >= 0) { log[idx].result = r; updated++; }
+          }
+        }
+        await sleep(300);
+      } catch {}
+    }
+    if (updated > 0) localStorage.setItem('fba_predictions', JSON.stringify(log));
+    return updated;
+  } catch { return 0; }
+}
+
 // ─── ULEPSZONY MODEL POISSONA + DIXON-COLES ──────────────────────────────────
 // Źródła: Dixon & Coles (1997), Maher (1982), StatsUltra, ExPrysm methodology
 
@@ -283,6 +355,41 @@ function blendProbs(pois, elo) {
     draw: Math.round((pois.draw*0.70 + elo.draw*100*0.30)*10)/10,
     away: Math.round((pois.away*0.70 + elo.away*100*0.30)*10)/10,
   };
+}
+
+
+
+// ── METRYKI JAKOŚCI PREDYKCJI ─────────────────────────────────────────────────
+// RPS (Ranked Probability Score) — główna metryka 1X2 (Constantinou & Fenton 2012)
+// Niższa = lepsza. Pinnacle ≈ 0.202, akademickie modele 0.193-0.210
+function calcRPS(prob, actual) {
+  // prob = {home, draw, away} w skali 0-100, actual w {0=home, 1=draw, 2=away}
+  const p = [prob.home/100, prob.draw/100, prob.away/100];
+  const o = [0,0,0]; o[actual] = 1;
+  let rps = 0;
+  let cumP = 0, cumO = 0;
+  for (let i = 0; i < 2; i++) {
+    cumP += p[i];
+    cumO += o[i];
+    rps += (cumP - cumO) ** 2;
+  }
+  return rps / 2;
+}
+
+// Brier score multiclass — alternatywna metryka jakości probabilistycznej
+function calcBrier(prob, actual) {
+  const p = [prob.home/100, prob.draw/100, prob.away/100];
+  const o = [0,0,0]; o[actual] = 1;
+  let b = 0;
+  for (let i = 0; i < 3; i++) b += (p[i] - o[i]) ** 2;
+  return b;
+}
+
+// Log-loss — kara za pewne predykcje które się nie sprawdziły
+function calcLogLoss(prob, actual) {
+  const p = [prob.home/100, prob.draw/100, prob.away/100];
+  const eps = 0.001;
+  return -Math.log(Math.max(eps, p[actual]));
 }
 
 // ── PREDYKCJA PIERWSZEJ POŁOWY ────────────────────────────────────────────────
@@ -624,6 +731,9 @@ function App(){
   const[loadPew,setLoadPew]=useState(false);
   const[remisy,setRemisy]=useState([]);
   const[loadRem,setLoadRem]=useState(false);
+  const[predStats,setPredStats]=useState(()=>getPredictionStats());
+  const[showStats,setShowStats]=useState(false);
+  const[updatingResults,setUpdatingResults]=useState(false);
 
   // Ref zawsze trzyma aktualny selDate — fix stale closure w handleFetchDay
   const selDateRef=useRef(selDate);
@@ -641,6 +751,15 @@ function App(){
       setToken(tokenInput.trim());
       setConnected(true);
     }catch(e){setError("Nieprawidłowy klucz: "+e.message);}
+  };
+
+  const handleUpdateResults=async()=>{
+    setUpdatingResults(true);
+    const updated = await updatePredictionResults(token);
+    setPredStats(getPredictionStats());
+    setUpdatingResults(false);
+    if (updated > 0) alert(`✅ Zaktualizowano ${updated} wyników`);
+    else alert(`Brak nowych wyników do aktualizacji`);
   };
 
   const handleFetchDay=async()=>{
@@ -873,6 +992,9 @@ function App(){
       const hRest = daysSince(hLastDate);
       const aRest = daysSince(aLastDate);
 
+      // Zapisz predykcję do tracker'a (do walk-forward backtest)
+      savePrediction(match.id, match.homeTeam, match.awayTeam, lg?.code, probs, match.utcDate);
+
       setAnalysis({match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,halfTime,hMotiv,aMotiv,hRest,aRest,piDiff,hElo,aElo,league:selLeague,season:"2024/25"});
     }catch(e){setError(e.message);}
     setLoading(false);setStatus("");
@@ -917,6 +1039,42 @@ function App(){
         <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1e293b"}}>
           <div style={{fontSize:13,color:"#94a3b8",marginBottom:10,textAlign:"center"}}>📅 {fmtDate(selDate)}</div>
           <button onClick={handleFetchDay} disabled={busy} style={{...BTN,opacity:busy?0.5:1}}>{loadDay?"⟳ SZUKAM...":"SZUKAJ MECZÓW"}</button>
+          <button onClick={()=>setShowStats(s=>!s)} style={{width:"100%",padding:"8px",background:"#0f172a",border:"1px solid #1e293b",borderRadius:8,color:"#94a3b8",fontSize:11,marginTop:8,cursor:"pointer"}}>
+            📊 STATYSTYKI MODELU {predStats.count>0?`(${predStats.count}/${predStats.total} predykcji)`:`(${predStats.total} predykcji, 0 wyników)`}
+          </button>
+          {showStats&&<div style={{background:"#0a0f1e",border:"1px solid #1e293b",borderRadius:10,padding:"12px 14px",marginTop:8,fontSize:11}}>
+            {predStats.count===0?<div style={{color:"#64748b",lineHeight:1.5}}>
+              Brak zakończonych meczów z predykcjami. Analizuj mecze, a po ich zakończeniu kliknij "Zaktualizuj wyniki" aby zobaczyć skuteczność modelu.
+            </div>:<>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:10}}>
+                <div style={{background:"#0f172a",borderRadius:6,padding:"6px 10px"}}>
+                  <div style={{fontSize:9,color:"#475569",textTransform:"uppercase"}}>Trafność 1X2</div>
+                  <div style={{fontSize:16,fontWeight:900,color:predStats.accuracy>=53?"#10b981":predStats.accuracy>=48?"#f59e0b":"#ef4444"}}>{predStats.accuracy}%</div>
+                </div>
+                <div style={{background:"#0f172a",borderRadius:6,padding:"6px 10px"}}>
+                  <div style={{fontSize:9,color:"#475569",textTransform:"uppercase"}}>RPS (niższy=lepszy)</div>
+                  <div style={{fontSize:16,fontWeight:900,color:predStats.rps<=0.205?"#10b981":predStats.rps<=0.220?"#f59e0b":"#ef4444"}}>{predStats.rps}</div>
+                </div>
+                <div style={{background:"#0f172a",borderRadius:6,padding:"6px 10px"}}>
+                  <div style={{fontSize:9,color:"#475569",textTransform:"uppercase"}}>Brier</div>
+                  <div style={{fontSize:14,fontWeight:700,color:"#f1f5f9"}}>{predStats.brier}</div>
+                </div>
+                <div style={{background:"#0f172a",borderRadius:6,padding:"6px 10px"}}>
+                  <div style={{fontSize:9,color:"#475569",textTransform:"uppercase"}}>Log Loss</div>
+                  <div style={{fontSize:14,fontWeight:700,color:"#f1f5f9"}}>{predStats.logLoss}</div>
+                </div>
+              </div>
+              <div style={{fontSize:10,color:"#475569",lineHeight:1.5,marginBottom:8}}>
+                Benchmark: Pinnacle ≈ 52% acc / 0.202 RPS · Akademickie modele 53-55% / 0.195 RPS
+              </div>
+            </>}
+            <button onClick={handleUpdateResults} disabled={updatingResults} style={{width:"100%",padding:"8px",background:"#1e293b",border:"none",borderRadius:6,color:"#f59e0b",fontSize:11,fontWeight:700,cursor:"pointer",opacity:updatingResults?0.5:1,marginTop:8}}>
+              {updatingResults?"⟳ Pobieram wyniki...":"🔄 ZAKTUALIZUJ WYNIKI"}
+            </button>
+            <button onClick={()=>{if(confirm("Wyczyścić historię predykcji?")){localStorage.removeItem("fba_predictions");setPredStats(getPredictionStats());}}} style={{width:"100%",padding:"6px",background:"none",border:"none",color:"#475569",fontSize:10,marginTop:4,cursor:"pointer"}}>
+              wyczyść historię predykcji
+            </button>
+          </div>}
         </div>
       </div>}
 
