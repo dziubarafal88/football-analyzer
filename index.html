@@ -126,17 +126,6 @@ async function fdGet(path, token) {
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// ─── ALLSPORTSAPI — TENIS ────────────────────────────────────────────────────
-const TENNIS_BASE = "https://apiv2.allsportsapi.com/tennis/";
-
-async function tennisGet(params, apiKey) {
-  const qs = new URLSearchParams({...params, APIkey: apiKey}).toString();
-  const url = encodeURIComponent(`${TENNIS_BASE}?${qs}`);
-  const res = await fetch(`${PROXY}${url}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const d = await res.json();
-  return d.result || [];
-}
 
 
 // ─── ULEPSZONY MODEL POISSONA + DIXON-COLES ──────────────────────────────────
