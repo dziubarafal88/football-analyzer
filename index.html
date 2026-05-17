@@ -65,12 +65,37 @@ const BASE = "https://api.football-data.org/v4";
 const PROXY = "https://corsproxy.io/?";
 
 async function fdGet(path, token) {
+  const ckey = path.replace(/[^a-z0-9]/gi,'_').slice(0,80);
+  const cached = cacheGet(ckey);
+  if (cached) return cached;
   const url = encodeURIComponent(`${BASE}/${path}`);
   const res = await fetch(`${PROXY}${url}`, { headers: { "X-Auth-Token": token } });
   if (!res.ok) { const j = await res.json().catch(()=>({})); throw new Error(j.message||`HTTP ${res.status}`); }
-  return res.json();
+  const data = await res.json();
+  cacheSet(ckey, data);
+  return data;
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// ── CACHE (localStorage, TTL 30 min) ─────────────────────────────────────────
+const CACHE_TTL = 30 * 60 * 1000; // 30 minut
+function cacheGet(key) {
+  try {
+    const raw = localStorage.getItem('fba_' + key);
+    if (!raw) return null;
+    const {ts, data} = JSON.parse(raw);
+    if (Date.now() - ts > CACHE_TTL) { localStorage.removeItem('fba_' + key); return null; }
+    return data;
+  } catch { return null; }
+}
+function cacheSet(key, data) {
+  try { localStorage.setItem('fba_' + key, JSON.stringify({ts: Date.now(), data})); } catch {}
+}
+function cacheClear() {
+  try {
+    Object.keys(localStorage).filter(k=>k.startsWith('fba_')).forEach(k=>localStorage.removeItem(k));
+  } catch {}
+}
 
 // ─── ULEPSZONY MODEL POISSONA + DIXON-COLES ──────────────────────────────────
 // Źródła: Dixon & Coles (1997), Maher (1982), StatsUltra, ExPrysm methodology
@@ -218,7 +243,7 @@ async function fetchDayMatches(dateStr, token, onStatus) {
 // Pobierz formę drużyny + statystyki z bieżącego sezonu
 async function fetchTeamStats(teamId, compCode, token, onStatus, label) {
   onStatus(`📊 Forma: ${label}...`);
-  await sleep(700);
+  await sleep(400);
 
   const data = await fdGet(
     `teams/${teamId}/matches?status=FINISHED&limit=10${compCode ? "&competitions=" + compCode : ""}`,
@@ -277,7 +302,7 @@ async function fetchTeamStats(teamId, compCode, token, onStatus, label) {
   const suspended=[], yellowCount={};
   const last3 = matches.slice(-3);
   for(let i=0;i<last3.length;i++){
-    await sleep(500);
+    await sleep(300);
     try{
       const det = await fdGet(`matches/${last3[i].id}`, token);
       const bookings = det.bookings||[];
@@ -316,7 +341,7 @@ async function fetchTeamStats(teamId, compCode, token, onStatus, label) {
 async function fetchStandings(compCode, homeId, awayId, token, onStatus) {
   if (!compCode) return { home:null, away:null, table:[] };
   onStatus("📋 Pobieranie tabeli...");
-  await sleep(700);
+  await sleep(400);
   try {
     const data = await fdGet(`competitions/${compCode}/standings`, token);
     const table = data.standings?.[0]?.table || [];
@@ -333,7 +358,7 @@ async function fetchStandings(compCode, homeId, awayId, token, onStatus) {
 
 async function fetchH2H(matchId, token, onStatus) {
   onStatus("🔄 Pobieranie H2H...");
-  await sleep(700);
+  await sleep(400);
   try {
     const data = await fdGet(`matches/${matchId}`, token);
     return (data.head2head?.matches || []).slice(-5).reverse().map(m => ({
@@ -478,7 +503,7 @@ function App(){
             results.push({match:m,league:lg.name,leagueCode:lg.code,probs:p,diff});
           }
         });
-        await sleep(700);
+        await sleep(400);
       }catch{}
     }
     results.sort((a,b)=>b.probs.draw-a.probs.draw||a.diff-b.diff);
@@ -534,7 +559,7 @@ function App(){
             results.push({match:m,league:lg.name,leagueCode:lg.code,probs:p});
           }
         });
-        await sleep(700);
+        await sleep(400);
       }catch{}
     }
     results.sort((a,b)=>Math.max(b.probs.home,b.probs.away)-Math.max(a.probs.home,a.probs.away));
@@ -549,12 +574,12 @@ function App(){
     try{
       setStatus(`📊 Forma: ${match.homeTeam}...`);
       const hStats=await fetchTeamStats(match.homeId,lg?.code,token,setStatus,match.homeTeam);
-      await sleep(700);
+      await sleep(400);
       setStatus(`📊 Forma: ${match.awayTeam}...`);
       const aStats=await fetchTeamStats(match.awayId,lg?.code,token,setStatus,match.awayTeam);
-      await sleep(700);
+      await sleep(400);
       const standings=await fetchStandings(lg?.code,match.homeId,match.awayId,token,setStatus);
-      await sleep(700);
+      await sleep(400);
       const h2h=await fetchH2H(match.id,token,setStatus);
 
       // ── ULEPSZONY MODEL: Dixon-Coles + home/away split + time-decay ──
