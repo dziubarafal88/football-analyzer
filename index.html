@@ -66,7 +66,9 @@ const PROXY = "https://corsproxy.io/?";
 
 async function fdGet(path, token) {
   const ckey = path.replace(/[^a-z0-9]/gi,'_').slice(0,80);
-  const cached = cacheGet(ckey);
+  // Krótszy TTL dla zapytań dziennych (dateFrom/dateTo) bo statusy meczów się zmieniają
+  const isDayQuery = path.includes('dateFrom') || path.includes('dateTo');
+  const cached = cacheGet(ckey, isDayQuery ? 5*60*1000 : null);
   if (cached) return cached;
   const url = encodeURIComponent(`${BASE}/${path}`);
   const res = await fetch(`${PROXY}${url}`, { headers: { "X-Auth-Token": token } });
@@ -79,12 +81,13 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── CACHE (localStorage, TTL 30 min) ─────────────────────────────────────────
 const CACHE_TTL = 30 * 60 * 1000; // 30 minut
-function cacheGet(key) {
+function cacheGet(key, customTTL) {
   try {
     const raw = localStorage.getItem('fba_' + key);
     if (!raw) return null;
     const {ts, data} = JSON.parse(raw);
-    if (Date.now() - ts > CACHE_TTL) { localStorage.removeItem('fba_' + key); return null; }
+    const ttl = customTTL || CACHE_TTL;
+    if (Date.now() - ts > ttl) { localStorage.removeItem('fba_' + key); return null; }
     return data;
   } catch { return null; }
 }
@@ -305,7 +308,7 @@ async function updatePredictionResults(token) {
     for (let i=0;i<Math.min(unresolved.length, 30);i++){
       try {
         const m = await fdGet(`matches/${unresolved[i].matchId}`, token);
-        if (m.match?.status === "FINISHED") {
+        if (["FINISHED","AWARDED"].includes(m.match?.status)) {
           const sh = m.match.score?.fullTime?.home;
           const sa = m.match.score?.fullTime?.away;
           if (sh != null && sa != null) {
@@ -581,8 +584,19 @@ async function fetchDayMatches(dateStr, token, onStatus) {
   onStatus("📡 Pobieram mecze z football-data.org...");
   const data = await fdGet(`matches?date=${dateStr}`, token);
   const allMatches = data.matches || [];
-  // Pokaż tylko nadchodzące/trwające — ukryj już zakończone
-  const matches = allMatches.filter(m => m.status !== "FINISHED");
+  // Pokaż tylko nadchodzące/aktualne — ukryj zakończone, odwołane, przełożone, oraz
+  // mecze które rozpoczęły się ponad 2.5h temu (= musiały się już zakończyć)
+  const FINISHED_STATUSES = ["FINISHED", "AWARDED", "POSTPONED", "SUSPENDED", "CANCELLED"];
+  const now = Date.now();
+  const matches = allMatches.filter(m => {
+    if (FINISHED_STATUSES.includes(m.status)) return false;
+    // Mecz piłkarski trwa ~110 minut (90 + przerwa + doliczony). Bezpiecznie: 150 min od startu = już po
+    if (m.utcDate) {
+      const matchStart = new Date(m.utcDate).getTime();
+      if (now - matchStart > 150 * 60 * 1000) return false; // 2.5h od startu = ukryj
+    }
+    return true;
+  });
   if (!matches.length) throw new Error("Brak nadchodzących meczów na ten dzień.");
 
   // Grupuj po lidze
