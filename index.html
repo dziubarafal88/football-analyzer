@@ -110,55 +110,62 @@ async function fetchTennisDay(dateStr, apiKey, onStatus) {
   return Object.values(groups);
 }
 
-async function fetchTennisRankings(apiKey) {
-  // Pobierz WSZYSTKIE dostępne typy rankingów
-  const types = ["ATP","WTA","ITF_M","ITF_W","ITFJM","ITFJW","Doubles_ATP","Doubles_WTA"];
+async function buildRankMap(apiKey) {
+  // Pobierz ATP i WTA ranking (pełne listy)
+  const types = ["ATP","WTA","ITF_M","ITF_W"];
   const results = await Promise.all(
-    types.map(t => tennisGet({met:"Rankings", RankingType:t}, apiKey).catch(()=>[]))
+    types.map(t=>tennisGet({met:"Rankings",RankingType:t},apiKey).catch(()=>[]))
   );
-  const map = {}; // "last_name" -> rank, "full_name" -> rank, "initial_lastname" -> rank
+  const map = {}; // lowercase_lastname -> {rank, full}
 
-  results.flat().forEach(p => {
-    const full = (p.player_name||p.ranking_player||"").trim();
-    const rank = parseInt(p.player_rank||p.ranking_rank||9999);
-    if(!full||rank>=9999) return;
+  console.log("Rankings sample:", JSON.stringify(results.flat().slice(0,2)));
+  results.flat().forEach(p=>{
+    // AllSportsAPI zwraca różne pola w zależności od wersji
+    const full=(p.player_name||p.ranking_player||p.name||"").trim();
+    const rank=parseInt(p.player_rank||p.ranking_rank||p.rank||0);
+    if(!full||!rank) return;
 
-    const lower = full.toLowerCase();
-    map[lower] = Math.min(map[lower]||9999, rank);
+    const lower=full.toLowerCase();
+    // Pełne imię i nazwisko
+    if(!map[lower]||rank<map[lower]) map[lower]=rank;
 
-    // Indeksuj też samo nazwisko (ostatni człon)
-    const parts = full.split(" ");
-    if(parts.length>1){
-      const last = parts[parts.length-1].toLowerCase();
-      map[last] = Math.min(map[last]||9999, rank);
-      // "A. Kowalski" format
-      const abbr = (parts[0][0]+". "+parts.slice(1).join(" ")).toLowerCase();
-      map[abbr] = Math.min(map[abbr]||9999, rank);
-      // "Kowalski A." format
-      const abbr2 = (parts.slice(0,-1).join(" ")+" "+parts[0][0]+".").toLowerCase();
-      map[abbr2] = Math.min(map[abbr2]||9999, rank);
+    const parts=full.split(" ").filter(Boolean);
+    if(parts.length>=2){
+      // Tylko nazwisko (ostatni element)
+      const last=parts[parts.length-1].toLowerCase();
+      if(!map[last]||rank<map[last]) map[last]=rank;
+      // "F. Tiafoe" format (initial + lastname)
+      const abbr=(parts[0][0]+". "+parts.slice(1).join(" ")).toLowerCase();
+      if(!map[abbr]||rank<map[abbr]) map[abbr]=rank;
+      // "Tiafoe F." format  
+      const abbr2=(parts[parts.length-1]+" "+parts[0][0]+".").toLowerCase();
+      if(!map[abbr2]||rank<map[abbr2]) map[abbr2]=rank;
     }
   });
   return map;
 }
 
-function lookupRank(name, rankMap) {
+function findRank(name, rankMap) {
   if(!name||!rankMap) return null;
-  const n = name.trim().toLowerCase();
-  // Exact match
+  const clean=s=>s.toLowerCase().replace(/[^a-z .]/g,"").trim();
+  const n=clean(name);
   if(rankMap[n]) return rankMap[n];
-  // Last name only
-  const parts = n.split(/[\s/]+/);
-  const last = parts[parts.length-1];
-  if(rankMap[last]) return rankMap[last];
-  // "S. Fomin" -> try "fomin"
-  if(parts.length>=2){
-    const secondPart = parts[1].replace(/[^a-z]/g,"");
-    if(rankMap[secondPart]) return rankMap[secondPart];
+  // Spróbuj samo nazwisko
+  const parts=n.split(/[\s/]+/).filter(Boolean);
+  for(let i=parts.length-1;i>=0;i--){
+    const p=parts[i].replace(/\./g,"");
+    if(p.length>2&&rankMap[p]) return rankMap[p];
   }
-  // Partial match — find key that contains the last name
-  const match = Object.keys(rankMap).find(k => k.includes(last) || last.includes(k.split(" ").pop()));
-  return match ? rankMap[match] : null;
+  // Partial: szukaj klucza zawierającego nazwisko
+  const lastname=parts[parts.length-1].replace(/\./g,"");
+  if(lastname.length>2){
+    const found=Object.keys(rankMap).find(k=>{
+      const kparts=k.split(" ");
+      return kparts[kparts.length-1]===lastname||k.includes(lastname);
+    });
+    if(found) return rankMap[found];
+  }
+  return null;
 }
 
 async function fetchTennisH2H(p1Id, p2Id, apiKey, onStatus) {
@@ -566,44 +573,55 @@ function App(){
   const handleFetchTennis=async()=>{
     setLoadTennis(true);setError(null);setTennisData(null);setTennisAnalysis(null);
     try{
-      setStatus("🎾 Pobieram mecze...");
-      const data = await fetchTennisDay(selDateRef.current,tennisKey,setStatus);
+      setStatus("🎾 Pobieram mecze i rankingi...");
+      // Pobierz mecze i rankingi równolegle
+      const [data, rankMap] = await Promise.all([
+        fetchTennisDay(selDateRef.current,tennisKey,setStatus),
+        buildRankMap(tennisKey),
+      ]);
 
-      // Zbierz wszystkie unikalne ID zawodników
-      const playerIds = new Set();
-      data.forEach(t=>t.matches.forEach(m=>{
-        if(m.p1Id) playerIds.add(String(m.p1Id));
-        if(m.p2Id) playerIds.add(String(m.p2Id));
-      }));
-      const ids = [...playerIds];
-      setStatus(`🔍 Pobieranie rankingów ${ids.length} zawodników...`);
-
-      // Pobierz wszystkich zawodników po ID w paczkach po 5 (rate limit)
-      const playerMap = {}; // id -> rank
-      const batchSize = 5;
-      for(let i=0;i<ids.length;i+=batchSize){
-        const batch = ids.slice(i,i+batchSize);
-        const results = await Promise.allSettled(
-          batch.map(id=>tennisGet({met:"Players",playerId:id},tennisKey))
-        );
-        results.forEach((res,j)=>{
-          if(res.status!=="fulfilled"||!res.value) return;
-          const info=Array.isArray(res.value)?res.value[0]:res.value;
-          const rank=parseInt(info?.player_rank||0);
-          if(rank>0) playerMap[batch[j]]=rank;
-        });
-        if(i+batchSize<ids.length) await sleep(600); // rate limit
-      }
-
-      // Przypisz rankingi do meczów
-      const enriched = data.map(t=>({
+      // Pierwsza próba: dopasowanie po nazwisku z rankingów
+      let enriched = data.map(t=>({
         ...t,
         matches: t.matches.map(m=>({
           ...m,
-          p1Rank: playerMap[String(m.p1Id)]||null,
-          p2Rank: playerMap[String(m.p2Id)]||null,
+          p1Rank: findRank(m.p1,rankMap),
+          p2Rank: findRank(m.p2,rankMap),
         }))
       }));
+
+      // Druga próba: dla nieznalezionych — pobierz przez Players API po ID
+      const missing=[];
+      enriched.forEach(t=>t.matches.forEach(m=>{
+        if(!m.p1Rank&&m.p1Id) missing.push({m,field:"p1Rank",id:m.p1Id});
+        if(!m.p2Rank&&m.p2Id) missing.push({m,field:"p2Rank",id:m.p2Id});
+      }));
+
+      if(missing.length>0){
+        setStatus(`🔍 Szukam rankingów ${missing.length} zawodników...`);
+        // Pobierz w paczkach po 4
+        for(let i=0;i<Math.min(missing.length,40);i+=4){
+          const batch=missing.slice(i,i+4);
+          const res=await Promise.allSettled(
+            batch.map(({id})=>tennisGet({met:"Players",playerId:id},tennisKey))
+          );
+          res.forEach((r,j)=>{
+            if(r.status!=="fulfilled"||!r.value) return;
+            const info=Array.isArray(r.value)?r.value[0]:r.value;
+            // Debug: log all fields to console
+            console.log("Player API response:", JSON.stringify(info).slice(0,300));
+            // Sprawdź wszystkie możliwe pola z rankingiem
+            const rank=parseInt(
+              info?.player_rank||info?.ranking||info?.atp_rank||
+              info?.wta_rank||info?.itf_rank||info?.singles_rank||
+              info?.player_ranking||info?.current_ranking||0
+            );
+            if(rank>0) batch[j].m[batch[j].field]=rank;
+          });
+          if(i+4<missing.length) await sleep(500);
+        }
+      }
+
       setTennisData(enriched);
     }catch(e){setError(e.message);}
     setLoadTennis(false);setStatus("");
