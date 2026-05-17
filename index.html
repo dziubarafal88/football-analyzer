@@ -110,6 +110,22 @@ async function fetchTennisDay(dateStr, apiKey, onStatus) {
   return Object.values(groups);
 }
 
+async function fetchTennisRankings(apiKey) {
+  try {
+    const [atp, wta] = await Promise.all([
+      tennisGet({met:"Rankings", RankingType:"ATP"}, apiKey).catch(()=>[]),
+      tennisGet({met:"Rankings", RankingType:"WTA"}, apiKey).catch(()=>[]),
+    ]);
+    const map = {};
+    [...(atp||[]), ...(wta||[])].forEach(p => {
+      const name = (p.player_name||p.ranking_player||"").trim().toLowerCase();
+      const rank = parseInt(p.player_rank||p.ranking_rank||9999);
+      if(name) map[name] = rank;
+    });
+    return map;
+  } catch { return {}; }
+}
+
 async function fetchTennisH2H(p1Id, p2Id, apiKey, onStatus) {
   onStatus("🔄 Pobieranie H2H...");
   await sleep(600);
@@ -515,8 +531,28 @@ function App(){
   const handleFetchTennis=async()=>{
     setLoadTennis(true);setError(null);setTennisData(null);setTennisAnalysis(null);
     try{
-      const data=await fetchTennisDay(selDateRef.current,tennisKey,setStatus);
-      setTennisData(data);
+      setStatus("🎾 Pobieram mecze...");
+      const [data, rankMap] = await Promise.all([
+        fetchTennisDay(selDateRef.current,tennisKey,setStatus),
+        fetchTennisRankings(tennisKey),
+      ]);
+      // Attach rankings to each match
+      const enriched = data.map(t=>({
+        ...t,
+        matches: t.matches.map(m=>{
+          const r1 = rankMap[m.p1.trim().toLowerCase()] || null;
+          const r2 = rankMap[m.p2.trim().toLowerCase()] || null;
+          // Also try last name only
+          const p1Last = m.p1.split(/[\s/]/).pop().trim().toLowerCase();
+          const p2Last = m.p2.split(/[\s/]/).pop().trim().toLowerCase();
+          return {
+            ...m,
+            p1Rank: r1 || rankMap[p1Last] || null,
+            p2Rank: r2 || rankMap[p2Last] || null,
+          };
+        })
+      }));
+      setTennisData(enriched);
     }catch(e){setError(e.message);}
     setLoadTennis(false);setStatus("");
   };
@@ -788,7 +824,8 @@ function App(){
         {tennisData.map(tournament=><div key={tournament.name}>
           <div style={{fontSize:11,color:"#f59e0b",fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",margin:"12px 0 6px"}}>{tournament.name}</div>
           {tournament.matches.map(m=>{
-              const r1=m.p1Rank||200, r2=m.p2Rank||200;
+              const hasRanks = m.p1Rank||m.p2Rank;
+              const r1=m.p1Rank||500, r2=m.p2Rank||500;
               const p1q=Math.round((r2/(r1+r2))*100);
               const p2q=100-p1q;
               const p1Best=p1q>=p2q;
@@ -811,15 +848,16 @@ function App(){
                 <div style={{display:"flex",gap:6}}>
                   <div style={{flex:1,background:"#1e293b",borderRadius:8,padding:"6px 4px",textAlign:"center"}}>
                     <div style={{fontSize:10,color:"#64748b",marginBottom:2}}>{m.p1.split(" ").pop()}</div>
-                    <div style={{fontSize:20,fontWeight:900,color:p1Best?"#10b981":"#ef4444"}}>{p1q}%</div>
+                    <div style={{fontSize:20,fontWeight:900,color:hasRanks?(p1Best?"#10b981":"#ef4444"):"#475569"}}>{hasRanks?`${p1q}%`:"?"}</div>
+                    {m.p1Rank&&<div style={{fontSize:9,color:"#475569",marginTop:1}}>#{m.p1Rank} ATP/WTA</div>}
                   </div>
                   <div style={{flex:"0 0 50px",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:2}}>
                     <div style={{fontSize:9,color:"#475569"}}>{m.surface||"–"}</div>
-                    <div style={{fontSize:9,color:"#1e293b"}}>▼</div>
                   </div>
                   <div style={{flex:1,background:"#1e293b",borderRadius:8,padding:"6px 4px",textAlign:"center"}}>
                     <div style={{fontSize:10,color:"#64748b",marginBottom:2}}>{m.p2.split(" ").pop()}</div>
-                    <div style={{fontSize:20,fontWeight:900,color:!p1Best?"#10b981":"#ef4444"}}>{p2q}%</div>
+                    <div style={{fontSize:20,fontWeight:900,color:hasRanks?(!p1Best?"#10b981":"#ef4444"):"#475569"}}>{hasRanks?`${p2q}%`:"?"}</div>
+                    {m.p2Rank&&<div style={{fontSize:9,color:"#475569",marginTop:1}}>#{m.p2Rank} ATP/WTA</div>}
                   </div>
                 </div>
               </button>;
