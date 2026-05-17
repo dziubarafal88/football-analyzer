@@ -19,148 +19,6 @@ select option{background:#1e293b;color:#f1f5f9}
 <script type="text/babel">
 const {useState,useMemo,useRef,useEffect}=React;
 
-
-// ─── ULEPSZONY MODEL POISSONA + DIXON-COLES ──────────────────────────────────
-// Źródła: Dixon & Coles (1997), Maher (1982), StatsUltra, ExPrysm methodology
-
-// Przewaga własnego boiska per liga (literatura 2024-25, po korekcji post-COVID)
-const HOME_ADV = {
-  PL:"1.10", BL1:"1.08", SA:"1.09", PD:"1.11", FL1:"1.12",
-  DED:"1.10", PPL:"1.12", CL:"1.07", ELC:"1.13", BSA:"1.15",
-  DEFAULT:"1.10"
-};
-function getHA(code){ return parseFloat(HOME_ADV[code]||HOME_ADV.DEFAULT); }
-
-// ── DIXON-COLES CORRECTION (ρ = -0.13) ──────────────────────────────────────
-function dcCorr(x, y, lH, lA, rho = -0.13) {
-  if (x===0&&y===0) return Math.max(0, 1 - lH*lA*rho);
-  if (x===1&&y===0) return Math.max(0, 1 + lA*rho);
-  if (x===0&&y===1) return Math.max(0, 1 + lH*rho);
-  if (x===1&&y===1) return Math.max(0, 1 - rho);
-  return 1;
-}
-
-function pmf(l,k){if(l<=0)return k===0?1:0;let p=-l+k*Math.log(l);for(let i=1;i<=k;i++)p-=Math.log(i);return Math.exp(p);}
-
-function calcProbs(lH, lA, max=9) {
-  let hw=0, dr=0, aw=0;
-  for(let h=0;h<=max;h++) for(let a=0;a<=max;a++){
-    let p = pmf(lH,h) * pmf(lA,a) * dcCorr(h,a,lH,lA);
-    if(p<0)p=0;
-    if(h>a)hw+=p; else if(h===a)dr+=p; else aw+=p;
-  }
-  const t=hw+dr+aw||1;
-  return{home:Math.round(hw/t*1000)/10, draw:Math.round(dr/t*1000)/10, away:Math.round(aw/t*1000)/10};
-}
-
-// ── TIME-DECAY ────────────────────────────────────────────────────────────────
-function timeWeight(utcDate) {
-  const days = (Date.now() - new Date(utcDate).getTime()) / 86400000;
-  return Math.exp(-0.004 * days);
-}
-
-// ── ELO RATING (per-drużyna, akumulowany z historii meczów) ──────────────────
-// K=20 (standard piłkarski), inicjalny rating 1500
-const _elo = {}; // cache: teamId -> rating
-function eloExpected(rA, rB) { return 1 / (1 + Math.pow(10, (rB - rA) / 400)); }
-function eloUpdate(matches, teamId) {
-  if (_elo[teamId] != null) return _elo[teamId];
-  let r = 1500;
-  const K = 20;
-  matches.forEach(m => {
-    const isHome = m.homeTeam?.id === teamId;
-    const gs = (isHome ? m.score?.fullTime?.home : m.score?.fullTime?.away) ?? 0;
-    const gc = (isHome ? m.score?.fullTime?.away : m.score?.fullTime?.home) ?? 0;
-    const actual = gs > gc ? 1 : gs === gc ? 0.5 : 0;
-    const opp = 1500; // uproszczenie: brak historii przeciwnika
-    r += K * (actual - eloExpected(r, opp));
-  });
-  _elo[teamId] = r;
-  return r;
-}
-function eloProbs(eloH, eloA, homeAdv = 100) {
-  const adjH = eloH + homeAdv;
-  const pH = eloExpected(adjH, eloA);
-  const pA = eloExpected(eloA, adjH);
-  // Distribucja remis: reszta między H i A
-  const pD = Math.max(0, 1 - pH - pA * 0.85);
-  const t = pH + pD + pA * 0.85 || 1;
-  return { home: pH/t, draw: pD/t, away: (pA*0.85)/t };
-}
-
-// ── PI-RATING (Constantinou 2013 — najlepsza darmowa metoda) ─────────────────
-// Śledzi siłę ataku i obrony osobno. RPS 0.199 wg literatury 2025.
-// γ = parametr uczenia (0.0 - 1.0), lambda_pi = tempo wygaszania
-const PI_GAMMA = 0.036; // learning rate (optymalna z literatury)
-function calcPiRating(matches, teamId) {
-  // Buduj pi-rating z historii meczów
-  let phi = 0; // różnica siły: >0 silniejszy, <0 słabszy
-  matches.forEach((m, i) => {
-    const isHome = m.homeTeam?.id === teamId;
-    const gs = (isHome ? m.score?.fullTime?.home : m.score?.fullTime?.away) ?? 0;
-    const gc = (isHome ? m.score?.fullTime?.away : m.score?.fullTime?.home) ?? 0;
-    const margin = gs - gc; // różnica goli = sygnał uczenia
-    const w = timeWeight(m.utcDate);
-    phi += PI_GAMMA * margin * w;
-  });
-  return phi; // wyższy = silniejsza drużyna
-}
-
-// ── BLENDING POISSON + ELO (70%/30% wg badań) ────────────────────────────────
-function blendProbs(poissonProbs, eloP) {
-  const w1 = 0.70, w2 = 0.30;
-  return {
-    home: Math.round((poissonProbs.home*w1 + eloP.home*100*w2)*10)/10,
-    draw: Math.round((poissonProbs.draw*w1 + eloP.draw*100*w2)*10)/10,
-    away: Math.round((poissonProbs.away*w1 + eloP.away*100*w2)*10)/10,
-  };
-}
-
-// ── PREDYKCJA PIERWSZEJ POŁOWY (1H model) ─────────────────────────────────────
-// Badania: ~45% goli pada w 1H, rozkład Poissona z λ_1h ≈ λ_full * 0.45
-// Korekta: drużyny agresywne strzelają więcej w 1H (ratio z historii)
-function calcHalfTimeProbs(lH_full, lA_full, hH1ratio, aH1ratio) {
-  const lH1 = lH_full * (hH1ratio || 0.45);
-  const lA1 = lA_full * (aH1ratio || 0.45);
-  // Over/Under 0.5 i 1.5 goli w 1H
-  const p00 = pmf(lH1,0)*pmf(lA1,0);
-  const p10 = pmf(lH1,1)*pmf(lA1,0);
-  const p01 = pmf(lH1,0)*pmf(lA1,1);
-  const p11 = pmf(lH1,1)*pmf(lA1,1);
-  const p20 = pmf(lH1,2)*pmf(lA1,0);
-  const p02 = pmf(lH1,0)*pmf(lA1,2);
-  const under05_1h = Math.round(p00*1000)/10;
-  const over05_1h  = Math.round((1-p00)*1000)/10;
-  const under15_1h = Math.round((p00+p10+p01)*1000)/10;
-  const over15_1h  = Math.round((1-(p00+p10+p01))*1000)/10;
-  // Wyniki 1H: 0:0, 1:0, 0:1, 1:1
-  const top1h = [
-    {s:"0:0", p:Math.round(p00*1000)/10},
-    {s:"1:0", p:Math.round(p10*1000)/10},
-    {s:"0:1", p:Math.round(p01*1000)/10},
-    {s:"1:1", p:Math.round(p11*1000)/10},
-    {s:"2:0", p:Math.round(p20*1000)/10},
-    {s:"0:2", p:Math.round(p02*1000)/10},
-  ].sort((a,b)=>b.p-a.p);
-  // Przerwa: kto prowadzi po 45 min
-  let hWin1h=0, draw1h=0, aWin1h=0;
-  for(let h=0;h<=5;h++) for(let a=0;a<=5;a++){
-    const p=pmf(lH1,h)*pmf(lA1,a);
-    if(h>a)hWin1h+=p; else if(h===a)draw1h+=p; else aWin1h+=p;
-  }
-  const t1h=hWin1h+draw1h+aWin1h||1;
-  return {
-    lH1: Math.round(lH1*100)/100,
-    lA1: Math.round(lA1*100)/100,
-    homeWin: Math.round(hWin1h/t1h*1000)/10,
-    draw: Math.round(draw1h/t1h*1000)/10,
-    awayWin: Math.round(aWin1h/t1h*1000)/10,
-    under05: under05_1h, over05: over05_1h,
-    under15: under15_1h, over15: over15_1h,
-    topScores: top1h,
-  };
-}
-
 // ─── DODATKOWE RYNKI BUKMACHERSKIE ──────────────────────────────────────────
 // Over/Under 2.5, BTTS, Top wyniki — kluczowe dla precyzji typowania
 
@@ -214,18 +72,119 @@ async function fdGet(path, token) {
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// ─── ULEPSZONY MODEL POISSONA + DIXON-COLES ──────────────────────────────────
+// Źródła: Dixon & Coles (1997), Maher (1982), StatsUltra, ExPrysm methodology
 
-// ─── DODATKOWE RYNKI BUKMACHERSKIE ──────────────────────────────────────────
-// Over/Under 2.5, BTTS, Top wyniki — kluczowe dla precyzji typowania
+// Przewaga własnego boiska per liga (literatura 2024-25, po korekcji post-COVID)
+const HOME_ADV = {
+  PL:"1.10", BL1:"1.08", SA:"1.09", PD:"1.11", FL1:"1.12",
+  DED:"1.10", PPL:"1.12", CL:"1.07", ELC:"1.13", BSA:"1.15",
+  DEFAULT:"1.10"
+};
+function getHA(code){ return parseFloat(HOME_ADV[code]||HOME_ADV.DEFAULT); }
 
+// Korekcja Dixon-Coles dla niskich wyników (ρ = -0.13, standard literaturowy)
+// Poprawia predykcję remisów 0:0 i 1:1 o ~2-3%
+function dcCorr(x, y, lH, lA, rho = -0.13) {
+  if (x===0&&y===0) return Math.max(0, 1 - lH*lA*rho);
+  if (x===1&&y===0) return Math.max(0, 1 + lA*rho);
+  if (x===0&&y===1) return Math.max(0, 1 + lH*rho);
+  if (x===1&&y===1) return Math.max(0, 1 - rho);
+  return 1;
+}
 
+function pmf(l,k){if(l<=0)return k===0?1:0;let p=-l+k*Math.log(l);for(let i=1;i<=k;i++)p-=Math.log(i);return Math.exp(p);}
 
+function calcProbs(lH, lA, max=9) {
+  let hw=0, dr=0, aw=0;
+  for(let h=0;h<=max;h++) for(let a=0;a<=max;a++){
+    let p = pmf(lH,h) * pmf(lA,a) * dcCorr(h,a,lH,lA);
+    if(p<0)p=0;
+    if(h>a)hw+=p; else if(h===a)dr+=p; else aw+=p;
+  }
+  const t=hw+dr+aw||1;
+  return{home:Math.round(hw/t*1000)/10, draw:Math.round(dr/t*1000)/10, away:Math.round(aw/t*1000)/10};
+}
 
-// ─── FOOTBALL-DATA.ORG API ───────────────────────────────────────────────────
-const BASE = "https://api.football-data.org/v4";
-const PROXY = "https://corsproxy.io/?";
+// Waga czasowa meczu — starsze mecze ważą mniej (time-decay)
+// k=0.004 → mecz sprzed 30 dni waży 89%, sprzed 60 dni waży 79%
+function timeWeight(utcDate) {
+  const days = (Date.now() - new Date(utcDate).getTime()) / 86400000;
+  return Math.exp(-0.004 * days);
+}
 
+// ── ELO RATING ────────────────────────────────────────────────────────────────
+function eloExpected(rA, rB) { return 1 / (1 + Math.pow(10, (rB - rA) / 400)); }
+function eloFromMatches(matches, teamId) {
+  let r = 1500;
+  matches.forEach(m => {
+    const isHome = m.homeTeam?.id === teamId;
+    const gs = (isHome ? m.score?.fullTime?.home : m.score?.fullTime?.away) ?? 0;
+    const gc = (isHome ? m.score?.fullTime?.away : m.score?.fullTime?.home) ?? 0;
+    const actual = gs > gc ? 1 : gs === gc ? 0.5 : 0;
+    r = r + 20 * (actual - eloExpected(r, 1500));
+  });
+  return r;
+}
+function eloToProbs(eloH, eloA) {
+  const pH = eloExpected(eloH + 100, eloA);
+  const pA = eloExpected(eloA, eloH + 100);
+  const pD = Math.max(0, 1 - pH - pA);
+  const t = pH + pD + pA || 1;
+  return { home: pH/t, draw: pD/t, away: pA/t };
+}
 
+// ── PI-RATING (Constantinou 2013) ─────────────────────────────────────────────
+function piRatingFromMatches(matches, teamId) {
+  let phi = 0;
+  matches.forEach(m => {
+    const isHome = m.homeTeam?.id === teamId;
+    const gs = (isHome ? m.score?.fullTime?.home : m.score?.fullTime?.away) ?? 0;
+    const gc = (isHome ? m.score?.fullTime?.away : m.score?.fullTime?.home) ?? 0;
+    phi += 0.036 * (gs - gc) * timeWeight(m.utcDate);
+  });
+  return phi;
+}
+
+// ── BLEND POISSON + ELO (70/30) ──────────────────────────────────────────────
+function blendProbs(pois, elo) {
+  return {
+    home: Math.round((pois.home*0.70 + elo.home*100*0.30)*10)/10,
+    draw: Math.round((pois.draw*0.70 + elo.draw*100*0.30)*10)/10,
+    away: Math.round((pois.away*0.70 + elo.away*100*0.30)*10)/10,
+  };
+}
+
+// ── PREDYKCJA PIERWSZEJ POŁOWY ────────────────────────────────────────────────
+function calcHalfTime(lH, lA, h1ratioH, h1ratioA) {
+  const lH1 = lH * (h1ratioH || 0.45);
+  const lA1 = lA * (h1ratioA || 0.45);
+  let hW=0, dr=0, aW=0;
+  for(let h=0;h<=6;h++) for(let a=0;a<=6;a++){
+    const p = pmf(lH1,h)*pmf(lA1,a);
+    if(h>a) hW+=p; else if(h===a) dr+=p; else aW+=p;
+  }
+  const t=hW+dr+aW||1;
+  const p00=pmf(lH1,0)*pmf(lA1,0);
+  const p10=pmf(lH1,1)*pmf(lA1,0);
+  const p01=pmf(lH1,0)*pmf(lA1,1);
+  const scores1h = [];
+  for(let h=0;h<=3;h++) for(let a=0;a<=3;a++)
+    scores1h.push({s:`${h}:${a}`, p:Math.round(pmf(lH1,h)*pmf(lA1,a)*1000)/10});
+  scores1h.sort((a,b)=>b.p-a.p);
+  return {
+    homeWin: Math.round(hW/t*1000)/10,
+    draw:    Math.round(dr/t*1000)/10,
+    awayWin: Math.round(aW/t*1000)/10,
+    over05:  Math.round((1-p00)*1000)/10,
+    under05: Math.round(p00*1000)/10,
+    over15:  Math.round((1-p00-p10-p01)*1000)/10,
+    under15: Math.round((p00+p10+p01)*1000)/10,
+    top: scores1h.slice(0,6),
+    lH1: Math.round(lH1*100)/100,
+    lA1: Math.round(lA1*100)/100,
+  };
+}
 
 // Pobierz wszystkie mecze danego dnia
 async function fetchDayMatches(dateStr, token, onStatus) {
@@ -273,8 +232,6 @@ async function fetchTeamStats(teamId, compCode, token, onStatus, label) {
   let wScored=0, wConceded=0, wTotal=0;
   // ── Osobna forma home i away ──
   let hScored=0,hConceded=0,hCount=0, aScored=0,aConceded=0,aCount=0;
-  // ── Dane pierwszej połowy ──
-  let h1Count=0;
 
   last10.forEach(m => {
     const isHome = m.homeTeam?.id === teamId;
@@ -335,27 +292,21 @@ async function fetchTeamStats(teamId, compCode, token, onStatus, label) {
   }
   const yellowRisk=Object.entries(yellowCount).filter(([,v])=>v>=2).map(([k,v])=>({name:k,count:v}));
 
-  // ── Pi-Rating z historii meczów ──
-  const piRating = calcPiRating(last10, teamId);
+  // Pi-rating and ELO from match history
+  const piRating = piRatingFromMatches(last10, teamId);
+  const eloRating = eloFromMatches(last10, teamId);
 
-  // ── ELO z historii meczów ──
-  const eloRating = eloUpdate(last10, teamId);
-
-  // ── Ratio goli w 1H (halftime score) ──
-  let h1Scored=0, h1Total=0;
+  // First half goals ratio from halfTime scores
+  let h1sc=0, h1tot=0;
   last10.forEach(m=>{
-    const isHome = m.homeTeam?.id === teamId;
+    const isH = m.homeTeam?.id===teamId;
     const ht = m.score?.halfTime;
-    if(ht?.home != null && ht?.away != null){
-      const gs1h = isHome ? (ht.home??0) : (ht.away??0);
-      const gsFull = isHome ? (m.score?.fullTime?.home??0) : (m.score?.fullTime?.away??0);
-      h1Scored += gs1h;
-      h1Total  += gsFull;
-      h1Count++;
+    if(ht?.home!=null&&ht?.away!=null){
+      h1sc += isH?(ht.home??0):(ht.away??0);
+      h1tot += isH?(m.score?.fullTime?.home??0):(m.score?.fullTime?.away??0);
     }
   });
-  // Średni % goli strzelanych w 1H (default 0.45 jeśli brak danych)
-  const h1ratio = h1Total > 0 ? h1Scored / h1Total : 0.45;
+  const h1ratio = h1tot>0 ? h1sc/h1tot : 0.45;
 
   return { form, formScore, avgScored, avgConceded,
            avgScoredH, avgConcededH, avgScoredA, avgConcededA,
@@ -504,7 +455,7 @@ function App(){
     setLoadDay(false);setStatus("");
   };
 
-    const handleRemisy=async()=>{
+  const handleRemisy=async()=>{
     setView('remisy');setLoadRem(true);setRemisy([]);setError(null);
     const L=1.35,H=1.12;
     const results=[];
@@ -625,52 +576,52 @@ function App(){
       const hF = hStats.formScore ?? 0.5;
       const aF = aStats.formScore ?? 0.5;
 
-      // Pi-rating: różnica sił → korekta lambda
-      const hPi = hStats.piRating ?? 0;
-      const aPi = aStats.piRating ?? 0;
-      const piDiff = hPi - aPi; // >0 = gosp. silniejsi
-      const piCorr = Math.max(0.80, Math.min(1.20, 1 + piDiff * 0.04));
-
-      // ELO: drugi sygnał siły drużyn
-      const hElo = hStats.eloRating ?? 1500;
-      const aElo = aStats.eloRating ?? 1500;
-      const eloP = eloProbs(hElo, aElo, 100);
-
       // Kara za zawieszenia
       const hSusPenalty = Math.max(0.80, 1 - (hStats.suspended?.length||0)*0.07);
       const aSusPenalty = Math.max(0.80, 1 - (aStats.suspended?.length||0)*0.07);
 
-      // Zmęczenie (z danych poniżej — liczymy hRest/aRest najpierw)
+      // Korekta zmęczenia (udokumentowana statystycznie: <4 dni = -8% skuteczności)
+      const hRestDays = hRest ?? 7;
+      const aRestDays = aRest ?? 7;
+      const hFatigue = hRestDays < 4 ? 0.92 : hRestDays < 6 ? 0.97 : 1.0;
+      const aFatigue = aRestDays < 4 ? 0.92 : aRestDays < 6 ? 0.97 : 1.0;
+
+      // Pi-rating correction
+      const hPi = hStats.piRating ?? 0;
+      const aPi = aStats.piRating ?? 0;
+      const piDiff = hPi - aPi;
+      const piCorr = Math.max(0.80, Math.min(1.20, 1 + piDiff * 0.04));
+
+      // Lambda — Poisson with all corrections
+      const lH = Math.max(0.3,Math.min(4.5, (hAs/L)*(aAc/L)*L*H*(0.85+hF*0.30)*hSusPenalty*hFatigue*piCorr));
+      const lA = Math.max(0.3,Math.min(4.5, (aAs/L)*(hAc/L)*L  *(0.85+aF*0.30)*aSusPenalty*aFatigue/Math.max(0.80,piCorr)));
+
+      // ELO
+      const hElo = hStats.eloRating ?? 1500;
+      const aElo = aStats.eloRating ?? 1500;
+      const eloP = eloToProbs(hElo, aElo);
+
+      // Blend Poisson (70%) + ELO (30%)
+      const probs   = blendProbs(calcProbs(lH,lA), eloP);
+      const markets = calcMarkets(lH,lA);
+      const scores  = topScores(lH,lA);
+
+      // Half-time prediction
+      const halfTime = calcHalfTime(lH, lA, hStats.h1ratio, aStats.h1ratio);
+
+      // Motivation
+      const tblLen = tbl2.length;
+      const hMotiv = getMotivation(standings?.home?.position, tblLen);
+      const aMotiv = getMotivation(standings?.away?.position, tblLen);
+
+      // Fatigue
       const hLastDate = hStats.form?.length ? hStats.form[hStats.form.length-1]?.utcDate : null;
       const aLastDate = aStats.form?.length ? aStats.form[aStats.form.length-1]?.utcDate : null;
       const daysSince = d => d ? Math.round((Date.now()-new Date(d).getTime())/86400000) : null;
       const hRest = daysSince(hLastDate);
       const aRest = daysSince(aLastDate);
-      const hFatigue = (hRest??7) < 4 ? 0.92 : (hRest??7) < 6 ? 0.97 : 1.0;
-      const aFatigue = (aRest??7) < 4 ? 0.92 : (aRest??7) < 6 ? 0.97 : 1.0;
 
-      // Lambda Poissona — PEŁNY MODEL
-      const lH = Math.max(0.3,Math.min(4.5, (hAs/L)*(aAc/L)*L*H*(0.85+hF*0.30)*hSusPenalty*hFatigue*piCorr));
-      const lA = Math.max(0.3,Math.min(4.5, (aAs/L)*(hAc/L)*L  *(0.85+aF*0.30)*aSusPenalty*aFatigue/piCorr));
-
-      // Poisson + Dixon-Coles
-      const poissonProbs = calcProbs(lH,lA);
-      // Blend: 70% Poisson + 30% ELO (wg badań 2025)
-      const probs   = blendProbs(poissonProbs, eloP);
-      const markets = calcMarkets(lH,lA);
-      const scores  = topScores(lH,lA);
-
-      // ── PREDYKCJA PIERWSZEJ POŁOWY ──
-      const hH1ratio = hStats.h1ratio ?? 0.45;
-      const aH1ratio = aStats.h1ratio ?? 0.45;
-      const halfTime = calcHalfTimeProbs(lH, lA, hH1ratio, aH1ratio);
-
-      // Motywacja z pozycji w tabeli
-      const tblLen = tbl2.length;
-      const hMotiv = getMotivation(standings?.home?.position, tblLen);
-      const aMotiv = getMotivation(standings?.away?.position, tblLen);
-
-      setAnalysis({match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,hMotiv,aMotiv,hRest,aRest,halfTime,piDiff,hElo,aElo,league:selLeague,season:"2024/25"});
+      setAnalysis({match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,halfTime,hMotiv,aMotiv,hRest,aRest,piDiff,hElo,aElo,league:selLeague,season:"2024/25"});
     }catch(e){setError(e.message);}
     setLoading(false);setStatus("");
   };
@@ -717,9 +668,7 @@ function App(){
         </div>
       </div>}
 
-
-
-            {/* ── KROK 2: NAWIGACJA ── */}
+      {/* ── KROK 2: NAWIGACJA ── */}
       {dayData&&!analysis&&<div style={{marginBottom:14}}>
         <div style={{display:"flex",gap:6,marginBottom:12}}>
           <button onClick={()=>{setView('leagues');setSelLeague('');}} style={{flex:1,padding:"9px 4px",borderRadius:10,border:"1px solid",borderColor:view==='leagues'?"#10b981":"#334155",background:view==='leagues'?"#10b981":"#0f172a",color:view==='leagues'?"#000":"#94a3b8",fontSize:12,fontWeight:700,cursor:"pointer"}}>🏆 LIGI</button>
@@ -932,7 +881,7 @@ function App(){
 
       {/* ── KROK 3: ANALIZA ── */}
       {analysis&&(()=>{
-        const{match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,hMotiv,aMotiv,hRest,aRest,halfTime,piDiff,hElo,aElo,league}=analysis;
+        const{match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,halfTime,hMotiv,aMotiv,hRest,aRest,piDiff,hElo,aElo,league}=analysis;
         const SR=({label,hv,av,lower})=>{
           const h=parseFloat(hv),a=parseFloat(av),hW=lower?h<a:h>a,aW=lower?a<h:a>h;
           return<div style={{display:"flex",alignItems:"center",padding:"7px 0",borderBottom:"1px solid #1e293b"}}>
@@ -983,22 +932,60 @@ function App(){
               xG Gosp: <span style={{color:"#10b981",fontFamily:"'DM Mono',monospace"}}>{lH.toFixed(2)}</span>
               {" · "}xG Goście: <span style={{color:"#ef4444",fontFamily:"'DM Mono',monospace"}}>{lA.toFixed(2)}</span>
             </div>
-            <div style={{textAlign:"center",marginTop:6,fontSize:10,color:"#1e3a2f",padding:"4px 8px",background:"#031a0d",borderRadius:6}}>
-              Poisson+Dixon-Coles (70%) · ELO blend (30%) · Pi-Rating · time-decay
+            <div style={{textAlign:"center",marginTop:6,fontSize:10,color:"#1e3a2f",background:"#031a0d",borderRadius:6,padding:"4px 8px"}}>
+              Poisson+Dixon-Coles 70% · ELO 30% · Pi-Rating · time-decay
             </div>
-            {piDiff!=null&&<div style={{display:"flex",gap:6,marginTop:10}}>
+            <div style={{display:"flex",gap:6,marginTop:8}}>
               <div style={{flex:1,background:"#0f172a",borderRadius:8,padding:"6px 10px",textAlign:"center"}}>
                 <div style={{fontSize:9,color:"#475569",textTransform:"uppercase",marginBottom:2}}>Pi-Rating</div>
-                <div style={{fontSize:12,fontWeight:700,color:piDiff>0.1?"#10b981":piDiff<-0.1?"#ef4444":"#f59e0b"}}>
-                  {piDiff>0.1?"Gosp. silniejsi":piDiff<-0.1?"Gość silniejszy":"Wyrównani"}
+                <div style={{fontSize:12,fontWeight:700,color:(piDiff??0)>0.1?"#10b981":(piDiff??0)<-0.1?"#ef4444":"#f59e0b"}}>
+                  {(piDiff??0)>0.1?"Gosp. silniejsi":(piDiff??0)<-0.1?"Gość silniejszy":"Wyrównani"}
                 </div>
               </div>
               <div style={{flex:1,background:"#0f172a",borderRadius:8,padding:"6px 10px",textAlign:"center"}}>
                 <div style={{fontSize:9,color:"#475569",textTransform:"uppercase",marginBottom:2}}>ELO</div>
                 <div style={{fontSize:12,fontWeight:700,color:"#f1f5f9"}}>{Math.round(hElo??1500)} vs {Math.round(aElo??1500)}</div>
               </div>
-            </div>}
+            </div>
           </div>
+
+          {/* ── PIERWSZA POŁOWA ── */}
+          {halfTime&&<div style={CARD}>
+            <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,letterSpacing:"0.1em",color:"#6366f1",marginBottom:14}}>⏱ PROGNOZA — PIERWSZA POŁOWA</div>
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8}}>Prowadzenie po 45 min</div>
+              <div style={{display:"flex",gap:8}}>
+                {[{label:match.homeTeam,val:halfTime.homeWin,color:"#10b981"},{label:"Remis",val:halfTime.draw,color:"#f59e0b"},{label:match.awayTeam,val:halfTime.awayWin,color:"#ef4444"}].map(({label,val,color})=>{
+                  const best=val===Math.max(halfTime.homeWin,halfTime.draw,halfTime.awayWin);
+                  return<div key={label} style={{flex:1,background:"#0f172a",borderRadius:10,padding:"8px 4px",textAlign:"center",border:best?`1px solid ${color}`:"1px solid #1e293b"}}>
+                    <div style={{fontSize:9,color:"#64748b",marginBottom:4,lineHeight:1.3}}>{label}</div>
+                    <div style={{fontSize:22,fontWeight:900,color:best?color:"#94a3b8"}}>{val}%</div>
+                  </div>;
+                })}
+              </div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+              {[{label:"Over 0.5",val:halfTime.over05},{label:"Under 0.5",val:halfTime.under05},{label:"Over 1.5",val:halfTime.over15},{label:"Under 1.5",val:halfTime.under15}].map(({label,val})=>(
+                <div key={label} style={{background:"#0f172a",borderRadius:10,padding:"8px 12px",border:val>60?"1px solid #6366f1":"1px solid #1e293b"}}>
+                  <div style={{fontSize:10,color:"#64748b"}}>{label} 1H</div>
+                  <div style={{fontSize:22,fontWeight:900,color:val>60?"#6366f1":"#475569"}}>{val}%</div>
+                  {val>60&&<div style={{fontSize:9,color:"#6366f1",fontWeight:700}}>✓ DOMINUJĄCY</div>}
+                </div>
+              ))}
+            </div>
+            <div style={{marginBottom:8}}>
+              <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8}}>Najczęstszy wynik na przerwę</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6}}>
+                {halfTime.top.map((s,i)=>(
+                  <div key={s.s} style={{background:i===0?"#0a0a2a":"#0f172a",border:`1px solid ${i===0?"#6366f1":"#1e293b"}`,borderRadius:10,padding:"8px 4px",textAlign:"center"}}>
+                    <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:22,color:i===0?"#818cf8":"#f1f5f9"}}>{s.s}</div>
+                    <div style={{fontSize:11,color:i===0?"#6366f1":"#64748b",fontWeight:i===0?700:400}}>{s.p}%</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={{textAlign:"center",fontSize:10,color:"#374151"}}>xG 1H: <span style={{color:"#10b981"}}>{halfTime.lH1}</span> · <span style={{color:"#ef4444"}}>{halfTime.lA1}</span></div>
+          </div>}
 
           {/* Statystyki */}
           <div style={CARD}>
@@ -1084,68 +1071,6 @@ function App(){
                   {i===0&&<div style={{fontSize:9,color:"#10b981",marginTop:2}}>NAJCZĘSTSZY</div>}
                 </div>
               ))}
-            </div>
-          </div>}
-
-          {/* ── PIERWSZA POŁOWA ── */}
-          {halfTime&&<div style={CARD}>
-            <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,letterSpacing:"0.1em",color:"#6366f1",marginBottom:14}}>⏱ PROGNOZA — PIERWSZA POŁOWA</div>
-
-            {/* Wynik przerwy */}
-            <div style={{marginBottom:14}}>
-              <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8}}>Prowadzenie po 45 min</div>
-              <div style={{display:"flex",gap:8}}>
-                {[
-                  {label:match.homeTeam,val:halfTime.homeWin,color:"#10b981"},
-                  {label:"Remis",val:halfTime.draw,color:"#f59e0b"},
-                  {label:match.awayTeam,val:halfTime.awayWin,color:"#ef4444"},
-                ].map(({label,val,color})=>{
-                  const best=val===Math.max(halfTime.homeWin,halfTime.draw,halfTime.awayWin);
-                  return<div key={label} style={{flex:1,background:"#0f172a",borderRadius:10,padding:"8px 4px",textAlign:"center",border:best?`1px solid ${color}`:"1px solid #1e293b"}}>
-                    <div style={{fontSize:9,color:"#64748b",marginBottom:4,lineHeight:1.2}}>{label}</div>
-                    <div style={{fontSize:22,fontWeight:900,color:best?color:"#94a3b8"}}>{val}%</div>
-                  </div>;
-                })}
-              </div>
-            </div>
-
-            {/* Over/Under 1H */}
-            <div style={{marginBottom:14}}>
-              <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8}}>Gole w 1. połowie</div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-                {[
-                  {label:"Over 0.5",val:halfTime.over05,tip:"≥1 gol w 1H"},
-                  {label:"Under 0.5",val:halfTime.under05,tip:"0 goli w 1H"},
-                  {label:"Over 1.5",val:halfTime.over15,tip:"≥2 gole w 1H"},
-                  {label:"Under 1.5",val:halfTime.under15,tip:"≤1 gol w 1H"},
-                ].map(({label,val,tip})=>(
-                  <div key={label} style={{background:"#0f172a",borderRadius:10,padding:"8px 12px",border:val>60?"1px solid #6366f1":"1px solid #1e293b"}}>
-                    <div style={{fontSize:10,color:"#64748b"}}>{label}</div>
-                    <div style={{fontSize:22,fontWeight:900,color:val>60?"#6366f1":"#475569"}}>{val}%</div>
-                    <div style={{fontSize:9,color:"#334155"}}>{tip}</div>
-                    {val>60&&<div style={{fontSize:9,color:"#6366f1",fontWeight:700,marginTop:2}}>✓ DOMINUJĄCY</div>}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Top wyniki 1H */}
-            <div>
-              <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8}}>Najczęstszy wynik na przerwę</div>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6}}>
-                {halfTime.topScores.map((s,i)=>(
-                  <div key={s.s} style={{background:i===0?"#0a0a2a":"#0f172a",border:`1px solid ${i===0?"#6366f1":"#1e293b"}`,borderRadius:10,padding:"8px 4px",textAlign:"center"}}>
-                    <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:22,color:i===0?"#818cf8":"#f1f5f9"}}>{s.s}</div>
-                    <div style={{fontSize:11,color:i===0?"#6366f1":"#64748b",fontWeight:i===0?700:400}}>{s.p}%</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* xG pierwszej połowy */}
-            <div style={{marginTop:12,textAlign:"center",fontSize:11,color:"#374151"}}>
-              xG gosp. 1H: <span style={{color:"#10b981",fontFamily:"monospace"}}>{halfTime.lH1}</span> ·
-              xG gość 1H: <span style={{color:"#ef4444",fontFamily:"monospace"}}>{halfTime.lA1}</span>
             </div>
           </div>}
 
