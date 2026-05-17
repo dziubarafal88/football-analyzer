@@ -97,6 +97,8 @@ async function fetchTennisDay(dateStr, apiKey, onStatus) {
       id: m.event_key,
       p1: m.event_first_player, p1Id: m.first_player_key,
       p2: m.event_second_player, p2Id: m.second_player_key,
+      p1Rank: parseInt(m.event_first_player_ranking)||null,
+      p2Rank: parseInt(m.event_second_player_ranking)||null,
       time: m.event_time || "TBD",
       status: m.event_status,
       score: m.event_game_result || "",
@@ -786,23 +788,44 @@ function App(){
         {tennisData.map(tournament=><div key={tournament.name}>
           <div style={{fontSize:11,color:"#f59e0b",fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",margin:"12px 0 6px"}}>{tournament.name}</div>
           {tournament.matches.map(m=>(
-            <button key={m.id} onClick={()=>handleTennisAnalyze(m)} disabled={busy} style={{width:"100%",background:"#0f172a",border:"1px solid #1e293b",borderRadius:14,padding:"14px 16px",marginBottom:8,cursor:"pointer",textAlign:"left",opacity:busy?0.6:1}}>
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                <div style={{flex:1}}>
-                  <div style={{fontSize:13,fontWeight:700,color:"#f1f5f9"}}>{m.p1}</div>
-                  {m.surface&&<div style={{fontSize:10,color:"#475569",marginTop:2}}>🏟 {m.surface}</div>}
+            {(()=>{
+              // Szybka kalkulacja % z rankingów bezpośrednio na kartce
+              const r1=m.p1Rank||200, r2=m.p2Rank||200;
+              const p1q=Math.round((r2/(r1+r2))*100);
+              const p2q=100-p1q;
+              const p1Best=p1q>=p2q;
+              return<button key={m.id} onClick={()=>handleTennisAnalyze(m)} disabled={busy} style={{width:"100%",background:"#0f172a",border:"1px solid #1e293b",borderRadius:14,padding:"14px 16px",marginBottom:8,cursor:"pointer",textAlign:"left",opacity:busy?0.6:1}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:13,fontWeight:700,color:"#f1f5f9"}}>{m.p1}</div>
+                    {m.p1Rank&&<div style={{fontSize:10,color:"#475569",marginTop:1}}>#{m.p1Rank}</div>}
+                  </div>
+                  <div style={{textAlign:"center",padding:"0 10px"}}>
+                    <div style={{fontSize:11,color:"#f59e0b",fontWeight:700}}>VS</div>
+                    <div style={{fontSize:10,color:"#475569"}}>{m.time}</div>
+                    {m.score&&<div style={{fontSize:11,color:"#10b981",fontWeight:700,marginTop:2}}>{m.score}</div>}
+                  </div>
+                  <div style={{flex:1,textAlign:"right"}}>
+                    <div style={{fontSize:13,fontWeight:700,color:"#f1f5f9"}}>{m.p2}</div>
+                    {m.p2Rank&&<div style={{fontSize:10,color:"#475569",marginTop:1}}>#{m.p2Rank}</div>}
+                  </div>
                 </div>
-                <div style={{textAlign:"center",padding:"0 12px"}}>
-                  <div style={{fontSize:11,color:"#f59e0b",fontWeight:700}}>VS</div>
-                  <div style={{fontSize:10,color:"#475569"}}>{m.time}</div>
-                  {m.score&&<div style={{fontSize:11,color:"#10b981",fontWeight:700,marginTop:2}}>{m.score}</div>}
+                <div style={{display:"flex",gap:6}}>
+                  <div style={{flex:1,background:"#1e293b",borderRadius:8,padding:"6px 4px",textAlign:"center"}}>
+                    <div style={{fontSize:10,color:"#64748b",marginBottom:2}}>wygrana</div>
+                    <div style={{fontSize:20,fontWeight:900,color:p1Best?"#10b981":"#ef4444"}}>{p1q}%</div>
+                  </div>
+                  <div style={{flex:"0 0 60px",background:"#0f172a",borderRadius:8,padding:"6px 4px",textAlign:"center",border:"1px solid #1e293b"}}>
+                    <div style={{fontSize:9,color:"#475569",marginBottom:2}}>{m.surface||"?"}</div>
+                    <div style={{fontSize:10,color:"#334155",marginTop:2}}>tap → pełna analiza</div>
+                  </div>
+                  <div style={{flex:1,background:"#1e293b",borderRadius:8,padding:"6px 4px",textAlign:"center"}}>
+                    <div style={{fontSize:10,color:"#64748b",marginBottom:2}}>wygrana</div>
+                    <div style={{fontSize:20,fontWeight:900,color:!p1Best?"#10b981":"#ef4444"}}>{p2q}%</div>
+                  </div>
                 </div>
-                <div style={{flex:1,textAlign:"right"}}>
-                  <div style={{fontSize:13,fontWeight:700,color:"#f1f5f9"}}>{m.p2}</div>
-                  <div style={{fontSize:10,color:"#475569",marginTop:2}}>{m.round}</div>
-                </div>
-              </div>
-            </button>
+              </button>;
+            })()}
           ))}
         </div>)}
       </div>}
