@@ -171,37 +171,61 @@ function getStaticRank(name) {
 }
 
 async function buildRankMap(apiKey) {
-  // Pobierz ATP i WTA ranking (pełne listy)
-  const types = ["ATP","WTA","ITF_M","ITF_W"];
-  const results = await Promise.all(
+  // Sprawdź cache localStorage (7 dni)
+  try {
+    const cached = localStorage.getItem("tennis_ranks");
+    const cachedTime = localStorage.getItem("tennis_ranks_time");
+    if(cached && cachedTime && Date.now()-parseInt(cachedTime) < 7*86400000) {
+      const map = JSON.parse(cached);
+      console.log("Rankings from cache:", Object.keys(map).length, "players");
+      return map;
+    }
+  } catch {}
+
+  // Pobierz rankingi ze wszystkich kategorii
+  const types = ["ATP","WTA","ITF_M","ITF_W","Doubles_ATP","Doubles_WTA"];
+  const results = await Promise.allSettled(
     types.map(t=>tennisGet({met:"Rankings",RankingType:t},apiKey).catch(()=>[]))
   );
-  const map = {}; // lowercase_lastname -> {rank, full}
+  const all = results.flatMap(r=>r.status==="fulfilled"?(r.value||[]):[]);
 
-  console.log("Rankings sample:", JSON.stringify(results.flat().slice(0,2)));
-  results.flat().forEach(p=>{
-    // AllSportsAPI zwraca różne pola w zależności od wersji
-    const full=(p.player_name||p.ranking_player||p.name||"").trim();
-    const rank=parseInt(p.player_rank||p.ranking_rank||p.rank||0);
+  // Debug: pokaż pierwszego gracza żeby zobaczyć strukturę
+  if(all.length>0) console.log("Rankings API sample:", JSON.stringify(all[0]));
+  else console.log("Rankings: empty response from all types");
+
+  const map = {};
+  all.forEach(p=>{
+    // Próbuj WSZYSTKIE możliwe pola z nazwiskiem i rankingiem
+    const full = (
+      p.player_name||p.ranking_player||p.name||p.player_fullname||
+      p.firstname&&p.lastname?(p.firstname+" "+p.lastname):""
+    ).trim();
+    const rank = parseInt(
+      p.player_rank||p.ranking_rank||p.rank||p.current_rank||
+      p.singles_rank||p.atp_rank||p.wta_rank||p.ranking||0
+    );
     if(!full||!rank) return;
 
-    const lower=full.toLowerCase();
-    // Pełne imię i nazwisko
+    const lower = full.toLowerCase();
     if(!map[lower]||rank<map[lower]) map[lower]=rank;
 
-    const parts=full.split(" ").filter(Boolean);
+    const parts = full.split(/\s+/).filter(Boolean);
     if(parts.length>=2){
-      // Tylko nazwisko (ostatni element)
-      const last=parts[parts.length-1].toLowerCase();
+      const last = parts[parts.length-1].toLowerCase();
       if(!map[last]||rank<map[last]) map[last]=rank;
-      // "F. Tiafoe" format (initial + lastname)
+      // "F. Lastname"
       const abbr=(parts[0][0]+". "+parts.slice(1).join(" ")).toLowerCase();
       if(!map[abbr]||rank<map[abbr]) map[abbr]=rank;
-      // "Tiafoe F." format  
-      const abbr2=(parts[parts.length-1]+" "+parts[0][0]+".").toLowerCase();
-      if(!map[abbr2]||rank<map[abbr2]) map[abbr2]=rank;
     }
   });
+
+  // Zapisz do cache
+  try {
+    localStorage.setItem("tennis_ranks", JSON.stringify(map));
+    localStorage.setItem("tennis_ranks_time", String(Date.now()));
+  } catch {}
+
+  console.log("Rankings loaded:", Object.keys(map).length, "players");
   return map;
 }
 
@@ -659,7 +683,8 @@ function App(){
       }));
 
       if(missing.length>0){
-        setStatus(`🔍 Szukam rankingów ${missing.length} zawodników...`);
+        const matched=enriched.flatMap(t=>t.matches).filter(m=>m.p1Rank||m.p2Rank).length;
+      setStatus(`🔍 Rankingi: ${matched}/${enriched.flatMap(t=>t.matches).length} meczów. Uzupełniam brakujące...`);
         // Pobierz w paczkach po 4
         for(let i=0;i<Math.min(missing.length,40);i+=4){
           const batch=missing.slice(i,i+4);
