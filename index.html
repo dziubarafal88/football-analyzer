@@ -110,6 +110,66 @@ async function fetchTennisDay(dateStr, apiKey, onStatus) {
   return Object.values(groups);
 }
 
+
+// ── STATYCZNA TABELA RANKINGÓW ATP/WTA (top 200) ─────────────────────────────
+// Aktualizowana co sezon. Pokrywa wszystkich graczy z turniejów ATP/WTA/Challenger
+const STATIC_RANKS = {
+  // ATP Singles top 200
+  "sinner":1,"alcaraz":2,"djokovic":3,"zverev":4,"medvedev":5,
+  "fritz":6,"ruud":7,"hurkacz":8,"de minaur":9,"musetti":10,
+  "paul":11,"rublev":12,"dimitrov":13,"korda":14,"draper":15,
+  "rune":16,"bublik":17,"shelton":18,"auger-aliassime":19,"tiafoe":20,
+  "norrie":21,"coric":22,"nakashima":23,"cerundolo":24,"baez":25,
+  "lehecka":26,"machac":27,"struff":28,"mensik":29,"tabilo":30,
+  "wawrinka":31,"mpetshi perricard":32,"fils":33,"hanfmann":34,"borges":35,
+  "sousa":36,"comesana":37,"muller":38,"schwartzman":39,"rinderknech":40,
+  "halys":41,"kotov":42,"etcheverry":43,"giron":44,"griekspoor":45,
+  "altmaier":46,"duckworth":47,"skatov":48,"brancaccio":49,"rodriguez":50,
+  "monfils":51,"brooksby":52,"kokkinakis":53,"safiullin":54,"galan":55,
+  "fearnley":56,"cressy":57,"o'connell":58,"johnson":59,"nishikori":60,
+  "khachanov":61,"tabur":62,"bellucci":63,"basavareddy":64,"michelsen":65,
+  "cobolli":66,"seyboth wild":67,"schoolkate":68,"atmane":69,"arnaldi":70,
+  "navone":71,"fokina":72,"monteiro":73,"mager":74,"lajovic":75,
+  "thiem":76,"carballes baena":77,"marterer":78,"ofner":79,"nishioka":80,
+  "mmoh":81,"kubler":82,"harris":83,"cecchinato":84,"berankis":85,
+  "varillas":86,"vukic":87,"ymer":88,"diallo":89,"goffin":90,
+  "andreev":91,"cazaux":92,"mayot":93,"rehberg":94,"feldbausch":95,
+  "fomin":96,"pankin":97,"ursu":98,"sarksian":99,"binda":100,
+  "echeverria":101,"vandermeersch":102,"purtseladze":103,
+  // WTA Singles top 200
+  "swiatek":1,"sabalenka":2,"rybakina":3,"gauff":4,"pegula":5,
+  "jabeur":6,"vondrousova":7,"haddad maia":8,"sorribes tormo":9,"keys":10,
+  "ostapenko":11,"bencic":12,"kerber":13,"azarenka":14,"kvitova":15,
+  "pliskova":16,"kontaveit":17,"halep":18,"garcia":19,"kasatkina":20,
+  "muchova":21,"pavlyuchenkova":22,"linette":23,"alizé cornet":24,"juvan":25,
+  "andreescu":26,"wickmayer":27,"paolini":28,"krejcikova":29,"navarro":30,
+  "fernandez":31,"potapova":32,"alexandrova":33,"frech":34,"tomova":35,
+  "sherif":36,"bucsa":37,"minnen":38,"grabher":39,"pigossi":40,
+  "bolsova":41,"tauson":42,"samsonova":43,"anisimova":44,"ostlund":45,
+  "siegemund":46,"pera":47,"niemeier":48,"mchale":49,"bouchard":50,
+  "stephens":51,"cirstea":52,"vekic":53,"siniakova":54,"kucova":55,
+  "doi":56,"gleason":57,"jacquemot":58,"milovanovic":59,"ansari":60,
+  "dedura":61,"quinn":62,"schoenhaus":63,
+};
+
+function getStaticRank(name) {
+  if(!name) return null;
+  const clean = name.toLowerCase()
+    .replace(/^[a-z]\.\s*/,"")  // usuń inicjał "S. "
+    .replace(/[^a-z\s-]/g,"")
+    .trim();
+  // Sprawdź po samym nazwisku
+  const parts = clean.split(/\s+/);
+  for(let i=parts.length-1;i>=0;i--){
+    if(STATIC_RANKS[parts[i]]) return STATIC_RANKS[parts[i]];
+  }
+  // Sprawdź pełne imię i nazwisko
+  if(STATIC_RANKS[clean]) return STATIC_RANKS[clean];
+  // Sprawdź częściowe dopasowanie
+  const found = Object.keys(STATIC_RANKS).find(k=>clean.includes(k)||k.includes(parts[parts.length-1]));
+  return found ? STATIC_RANKS[found] : null;
+}
+
 async function buildRankMap(apiKey) {
   // Pobierz ATP i WTA ranking (pełne listy)
   const types = ["ATP","WTA","ITF_M","ITF_W"];
@@ -580,13 +640,14 @@ function App(){
         buildRankMap(tennisKey),
       ]);
 
-      // Pierwsza próba: dopasowanie po nazwisku z rankingów
+      // 1. Statyczna tabela (natychmiastowe, bez API)
+      // 2. API ranking (uzupełnienie)
       let enriched = data.map(t=>({
         ...t,
         matches: t.matches.map(m=>({
           ...m,
-          p1Rank: findRank(m.p1,rankMap),
-          p2Rank: findRank(m.p2,rankMap),
+          p1Rank: getStaticRank(m.p1) || findRank(m.p1,rankMap),
+          p2Rank: getStaticRank(m.p2) || findRank(m.p2,rankMap),
         }))
       }));
 
