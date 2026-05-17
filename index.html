@@ -131,12 +131,31 @@ function calcProbs(lH, lA, max=9) {
   return{home:Math.round(hw/t*1000)/10, draw:Math.round(dr/t*1000)/10, away:Math.round(aw/t*1000)/10};
 }
 
-// Waga czasowa meczu — starsze mecze ważą mniej (time-decay)
-// k=0.004 → mecz sprzed 30 dni waży 89%, sprzed 60 dni waży 79%
-function timeWeight(utcDate) {
+// ── TIME-DECAY (Dixon-Coles 1997, ξ optymalizowane per liga) ─────────────────
+// Constantinou 2013: ξ ≈ 0.0065/dzień (półżycia ~107 dni) jest empirycznie optymalne
+// Per liga: defensywne ligi (Serie A, Ligue 1) wymagają wolniejszego decay
+const XI_BY_LEAGUE = {
+  PL: 0.0065, BL1: 0.0070, SA: 0.0055, PD: 0.0065, FL1: 0.0058,
+  DED: 0.0072, PPL: 0.0068, CL: 0.0080, ELC: 0.0075, BSA: 0.0070,
+  DEFAULT: 0.0065
+};
+function getXi(code) { return XI_BY_LEAGUE[code] || XI_BY_LEAGUE.DEFAULT; }
+
+function timeWeight(utcDate, leagueCode) {
   const days = (Date.now() - new Date(utcDate).getTime()) / 86400000;
-  return Math.exp(-0.004 * days);
+  const xi = leagueCode ? getXi(leagueCode) : 0.0065;
+  return Math.exp(-xi * days);
 }
+
+// ── ZERO-INFLATED DRAW CORRECTION (Karlis-Ntzoufras 2003) ────────────────────
+// Per-liga współczynnik γ podbija prawdopodobieństwo remisów (0:0, 1:1, 2:2)
+// Empirycznie: defensywne ligi mają większe γ
+const DRAW_GAMMA = {
+  PL: 0.05, BL1: 0.04, SA: 0.10, PD: 0.06, FL1: 0.09,
+  DED: 0.03, PPL: 0.07, CL: 0.05, ELC: 0.05, BSA: 0.06,
+  DEFAULT: 0.05
+};
+function getDrawGamma(code) { return DRAW_GAMMA[code] || DRAW_GAMMA.DEFAULT; }
 
 // ── ELO RATING ────────────────────────────────────────────────────────────────
 function eloExpected(rA, rB) { return 1 / (1 + Math.pow(10, (rB - rA) / 400)); }
@@ -160,13 +179,13 @@ function eloToProbs(eloH, eloA) {
 }
 
 // ── PI-RATING (Constantinou 2013) ─────────────────────────────────────────────
-function piRatingFromMatches(matches, teamId) {
+function piRatingFromMatches(matches, teamId, leagueCode) {
   let phi = 0;
   matches.forEach(m => {
     const isHome = m.homeTeam?.id === teamId;
     const gs = (isHome ? m.score?.fullTime?.home : m.score?.fullTime?.away) ?? 0;
     const gc = (isHome ? m.score?.fullTime?.away : m.score?.fullTime?.home) ?? 0;
-    phi += 0.036 * (gs - gc) * timeWeight(m.utcDate);
+    phi += 0.036 * (gs - gc) * timeWeight(m.utcDate, leagueCode);
   });
   return phi;
 }
@@ -264,7 +283,7 @@ async function fetchTeamStats(teamId, compCode, token, onStatus, label) {
     const isHome = m.homeTeam?.id === teamId;
     const gs = (isHome ? m.score?.fullTime?.home : m.score?.fullTime?.away) ?? 0;
     const gc = (isHome ? m.score?.fullTime?.away : m.score?.fullTime?.home) ?? 0;
-    const w  = timeWeight(m.utcDate); // waga czasowa
+    const w  = timeWeight(m.utcDate, compCode); // waga czasowa per liga
 
     wScored   += gs * w;
     wConceded += gc * w;
@@ -290,7 +309,7 @@ async function fetchTeamStats(teamId, compCode, token, onStatus, label) {
       result: gs>gc?"W":gs===gc?"D":"L", scored:gs, conceded:gc, isHome,
       opponent: isHome?(m.awayTeam?.shortName||m.awayTeam?.name):(m.homeTeam?.shortName||m.homeTeam?.name),
       utcDate: m.utcDate,
-      w: timeWeight(m.utcDate)
+      w: timeWeight(m.utcDate, compCode)
     };
   });
 
@@ -320,7 +339,7 @@ async function fetchTeamStats(teamId, compCode, token, onStatus, label) {
   const yellowRisk=Object.entries(yellowCount).filter(([,v])=>v>=2).map(([k,v])=>({name:k,count:v}));
 
   // Pi-rating and ELO from match history
-  const piRating = piRatingFromMatches(last10, teamId);
+  const piRating = piRatingFromMatches(last10, teamId, compCode);
   const eloRating = eloFromMatches(last10, teamId);
 
   // First half goals ratio from halfTime scores
@@ -629,7 +648,22 @@ function App(){
       const eloP = eloToProbs(hElo, aElo);
 
       // Blend Poisson (70%) + ELO (30%)
-      const probs   = blendProbs(calcProbs(lH,lA), eloP);
+      const rawProbs = calcProbs(lH,lA);
+      // Zero-inflated draw correction per liga (Karlis-Ntzoufras)
+      const gamma = getDrawGamma(lg?.code);
+      const drawBoost = 1 + gamma;
+      const drawAdjusted = {
+        home: rawProbs.home * (1 - gamma * 0.5),
+        draw: rawProbs.draw * drawBoost,
+        away: rawProbs.away * (1 - gamma * 0.5),
+      };
+      const tNorm = drawAdjusted.home + drawAdjusted.draw + drawAdjusted.away || 1;
+      const correctedProbs = {
+        home: Math.round(drawAdjusted.home / tNorm * 1000) / 10,
+        draw: Math.round(drawAdjusted.draw / tNorm * 1000) / 10,
+        away: Math.round(drawAdjusted.away / tNorm * 1000) / 10,
+      };
+      const probs   = blendProbs(correctedProbs, eloP);
       const markets = calcMarkets(lH,lA);
       const scores  = topScores(lH,lA);
 
