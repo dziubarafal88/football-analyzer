@@ -129,6 +129,71 @@ async function loadOnnxModel() {
   }
 }
 
+// ── xG z Understat (auto-aktualizowane przez GitHub Actions co 6h) ───────────
+let _xgData = null;
+let _xgLoading = false;
+async function loadXGData() {
+  if (_xgData) return _xgData;
+  if (_xgLoading) {
+    for(let i=0;i<30;i++){await sleep(100); if(_xgData)return _xgData;}
+    return null;
+  }
+  _xgLoading = true;
+  try {
+    const res = await fetch("./data/xg.json?t="+Date.now());
+    if (!res.ok) { _xgLoading=false; return null; }
+    _xgData = await res.json();
+    _xgLoading = false;
+    return _xgData;
+  } catch {
+    _xgLoading = false;
+    return null;
+  }
+}
+
+// Znajdź xG dla drużyny - rolling średnia z ostatnich N meczów
+function findTeamXG(teamName, compCode, n=10) {
+  if (!_xgData?.team_xg) return null;
+  const norm = s => (s||"").toLowerCase().replace(/[^a-z]/g,"");
+  const target = norm(teamName);
+  // Spróbuj różne nazwy kluczy w xg data
+  const keys = Object.keys(_xgData.team_xg);
+  let match = keys.find(k => {
+    const [code, name] = k.split("|");
+    return code === compCode && norm(name) === target;
+  });
+  if (!match) {
+    // Fuzzy match
+    match = keys.find(k => {
+      const [code, name] = k.split("|");
+      return code === compCode && (norm(name).includes(target) || target.includes(norm(name)));
+    });
+  }
+  if (!match) return null;
+
+  const matches = _xgData.team_xg[match].slice(0, n);
+  if (matches.length < 3) return null;
+
+  // Time-decay weighted average
+  const now = Date.now();
+  let xgForSum=0, xgAgainstSum=0, wSum=0;
+  matches.forEach(m => {
+    const days = (now - new Date(m.date).getTime()) / 86400000;
+    const w = Math.exp(-0.0065 * days);
+    if (m.xg_for != null && m.xg_against != null) {
+      xgForSum += m.xg_for * w;
+      xgAgainstSum += m.xg_against * w;
+      wSum += w;
+    }
+  });
+  if (wSum === 0) return null;
+  return {
+    xgFor: xgForSum / wSum,
+    xgAgainst: xgAgainstSum / wSum,
+    nMatches: matches.length
+  };
+}
+
 async function predictXGB(hStats, aStats, compCode) {
   const session = await loadOnnxModel();
   if (!session) return null;
@@ -841,8 +906,8 @@ function App(){
     }catch(e){setError("Nieprawidłowy klucz: "+e.message);}
   };
 
-  // Pre-load ONNX model w tle - nie blokuje UI
-  useEffect(() => { loadOnnxModel(); }, []);
+  // Pre-load ONNX model + xG data w tle - nie blokuje UI
+  useEffect(() => { loadOnnxModel(); loadXGData(); }, []);
 
   const handleUpdateResults=async()=>{
     setUpdatingResults(true);
@@ -1000,9 +1065,23 @@ function App(){
       const piDiff = hPi - aPi;
       const piCorr = Math.max(0.80, Math.min(1.20, 1 + piDiff * 0.04));
 
-      // Lambda — Poisson with all corrections
-      const lH = Math.max(0.3,Math.min(4.5, (hAs/L)*(aAc/L)*L*H*(0.85+hF*0.30)*hSusPenalty*hFatigue*piCorr));
-      const lA = Math.max(0.3,Math.min(4.5, (aAs/L)*(hAc/L)*L  *(0.85+aF*0.30)*aSusPenalty*aFatigue/Math.max(0.80,piCorr)));
+      // xG correction - jeśli mamy xG z Understat, mieszaj z avgScored 65/35 (Forcher 2025)
+      const hXG = findTeamXG(match.homeTeam, lg?.code);
+      const aXG = findTeamXG(match.awayTeam, lg?.code);
+      let hAsAdj = hAs, hAcAdj = hAc, aAsAdj = aAs, aAcAdj = aAc;
+      if (hXG) {
+        hAsAdj = 0.65 * hXG.xgFor + 0.35 * hAs;
+        hAcAdj = 0.65 * hXG.xgAgainst + 0.35 * hAc;
+      }
+      if (aXG) {
+        aAsAdj = 0.65 * aXG.xgFor + 0.35 * aAs;
+        aAcAdj = 0.65 * aXG.xgAgainst + 0.35 * aAc;
+      }
+
+      // Lambda — Poisson with all corrections (z xG jeśli dostępne)
+      const lH = Math.max(0.3,Math.min(4.5, (hAsAdj/L)*(aAcAdj/L)*L*H*(0.85+hF*0.30)*hSusPenalty*hFatigue*piCorr));
+      const lA = Math.max(0.3,Math.min(4.5, (aAsAdj/L)*(hAcAdj/L)*L  *(0.85+aF*0.30)*aSusPenalty*aFatigue/Math.max(0.80,piCorr)));
+      const hasXG = !!(hXG || aXG);
 
       // ELO + Glicko-2 ratings
       const hElo = hStats.eloRating ?? 1500;
@@ -1093,7 +1172,7 @@ function App(){
       // Zapisz predykcję do tracker'a (do walk-forward backtest)
       savePrediction(match.id, match.homeTeam, match.awayTeam, lg?.code, probs, match.utcDate);
 
-      setAnalysis({match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,halfTime,hMotiv,aMotiv,hRest,aRest,piDiff,hElo,aElo,marketProbs,hGlicko,aGlicko,xgbProbs,league:selLeague,season:"2025/26"});
+      setAnalysis({match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,halfTime,hMotiv,aMotiv,hRest,aRest,piDiff,hElo,aElo,marketProbs,hGlicko,aGlicko,xgbProbs,hasXG,hXG,aXG,league:selLeague,season:"2025/26"});
     }catch(e){setError(e.message);}
     setLoading(false);setStatus("");
   };
@@ -1389,7 +1468,7 @@ function App(){
 
       {/* ── KROK 3: ANALIZA ── */}
       {analysis&&(()=>{
-        const{match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,halfTime,hMotiv,aMotiv,hRest,aRest,piDiff,hElo,aElo,marketProbs,hGlicko,aGlicko,xgbProbs,league}=analysis;
+        const{match,hStats,aStats,standings,h2h,lH,lA,probs,markets,scores,halfTime,hMotiv,aMotiv,hRest,aRest,piDiff,hElo,aElo,marketProbs,hGlicko,aGlicko,xgbProbs,hasXG,hXG,aXG,league}=analysis;
         const SR=({label,hv,av,lower})=>{
           const h=parseFloat(hv),a=parseFloat(av),hW=lower?h<a:h>a,aW=lower?a<h:a>h;
           return<div style={{display:"flex",alignItems:"center",padding:"7px 0",borderBottom:"1px solid #1e293b"}}>
@@ -1462,6 +1541,11 @@ function App(){
             {xgbProbs&&<div style={{marginTop:8,background:"#0a2e1a",borderRadius:8,padding:"6px 10px",border:"1px solid #10b98140"}}>
               <div style={{fontSize:10,color:"#10b981",fontWeight:700,textAlign:"center"}}>
                 🤖 XGBoost ML (19268 meczów treningowych): {Math.round(xgbProbs.home)}% / {Math.round(xgbProbs.draw)}% / {Math.round(xgbProbs.away)}%
+              </div>
+            </div>}
+            {hasXG&&<div style={{marginTop:8,background:"#1a1a2e",borderRadius:8,padding:"6px 10px",border:"1px solid #818cf840"}}>
+              <div style={{fontSize:10,color:"#818cf8",fontWeight:700,textAlign:"center"}}>
+                📊 xG (Understat) {hXG&&`gosp: ${hXG.xgFor.toFixed(2)}|${hXG.xgAgainst.toFixed(2)}`} {aXG&&` · gość: ${aXG.xgFor.toFixed(2)}|${aXG.xgAgainst.toFixed(2)}`}
               </div>
             </div>}
             {marketProbs&&<div style={{marginTop:10,background:"#0f172a",borderRadius:8,padding:"8px 10px"}}>
