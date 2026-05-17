@@ -215,8 +215,10 @@ function calcHalfTime(lH, lA, h1ratioH, h1ratioA) {
 async function fetchDayMatches(dateStr, token, onStatus) {
   onStatus("📡 Pobieram mecze z football-data.org...");
   const data = await fdGet(`matches?date=${dateStr}`, token);
-  const matches = data.matches || [];
-  if (!matches.length) throw new Error("Brak meczów na ten dzień w dostępnych ligach.");
+  const allMatches = data.matches || [];
+  // Pokaż tylko nadchodzące/trwające — ukryj już zakończone
+  const matches = allMatches.filter(m => m.status !== "FINISHED");
+  if (!matches.length) throw new Error("Brak nadchodzących meczów na ten dzień.");
 
   // Grupuj po lidze
   const map = {};
